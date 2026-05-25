@@ -52,7 +52,8 @@ let pendingSeekRatio = null;
 let statusState = "info";
 let usageState = null;
 const audioQueue = [];
-const MAX_AUDIO_QUEUE = 32;
+const MAX_AUDIO_QUEUE = 8;
+const WAVEFORM_SAMPLE_RATE = 160;
 const SPEED_STEP = 0.05;
 const IDLE_MESSAGES = [
   "Waiting for work.",
@@ -319,7 +320,7 @@ function waveIntensity() {
 
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const windowSize = Math.max(192, Math.floor(sampleRate * 0.032));
+  const windowSize = Math.max(4, Math.floor(sampleRate * 0.08));
   const start = clampNumber(centerIndex - Math.floor(windowSize / 2), 0, Math.max(0, data.length - 1));
   const end = clampNumber(start + windowSize, start + 1, data.length);
   let sum = 0;
@@ -375,6 +376,27 @@ function rebuildWaveFrame(width) {
   wave.frame = nextFrame;
 }
 
+function compactWaveformBuffer(decoded) {
+  const source = decoded.getChannelData(0);
+  const sourceRate = decoded.sampleRate;
+  const targetLength = Math.max(1, Math.ceil(decoded.duration * WAVEFORM_SAMPLE_RATE));
+  const data = new Float32Array(targetLength);
+
+  for (let index = 0; index < targetLength; index += 1) {
+    const start = Math.floor(index * sourceRate / WAVEFORM_SAMPLE_RATE);
+    const end = Math.min(source.length, Math.max(start + 1, Math.floor((index + 1) * sourceRate / WAVEFORM_SAMPLE_RATE)));
+    let total = 0;
+    let count = 0;
+    for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) {
+      total += source[sourceIndex] || 0;
+      count += 1;
+    }
+    data[index] = total / Math.max(1, count);
+  }
+
+  return { data, sampleRate: WAVEFORM_SAMPLE_RATE };
+}
+
 function waveformSampleAt(x, width) {
   if (!wave.frame.length) {
     return 0;
@@ -409,10 +431,7 @@ async function loadWaveformData(clip, player) {
     const bytes = await response.arrayBuffer();
     const decoded = await wave.audioContext.decodeAudioData(bytes);
     if (audio === player && wave.player === player) {
-      wave.decoded = {
-        data: decoded.getChannelData(0),
-        sampleRate: decoded.sampleRate
-      };
+      wave.decoded = compactWaveformBuffer(decoded);
     }
   } catch (_error) {
     if (audio === player && wave.player === player) {

@@ -205,6 +205,15 @@ class TextToSpeech {
 
     return { wav: combined || [], duration: [combinedDuration] };
   }
+
+  async release() {
+    await Promise.all([
+      this.dpOrt?.release?.(),
+      this.textEncOrt?.release?.(),
+      this.vectorEstOrt?.release?.(),
+      this.vocoderOrt?.release?.()
+    ]);
+  }
 }
 
 function lengthToMask(lengths) {

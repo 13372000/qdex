@@ -938,6 +938,9 @@ async function ensureModel() {
   if (!assetsReady(root)) {
     throw new Error("Supertonic assets are missing. Download them in this app first.");
   }
+  if (model && modelAssetRoot !== root) {
+    await releaseSupertonicModel();
+  }
   if (model && modelAssetRoot === root) {
     return model;
   }
@@ -949,6 +952,32 @@ async function ensureModel() {
   voiceStyles.clear();
   status("ready", "Local Supertonic model is loaded.");
   return model;
+}
+
+async function releaseSupertonicModel() {
+  const loadedModel = model;
+  model = null;
+  modelAssetRoot = "";
+  voiceStyles.clear();
+  if (!loadedModel?.release) {
+    return;
+  }
+
+  try {
+    await loadedModel.release();
+  } catch (error) {
+    console.warn("Could not release Supertonic model:", error);
+  }
+}
+
+async function applySpeechSettings(settings) {
+  const previousEngine = speech.settings.engine;
+  const nextSettings = normalizedSettings(settings);
+  speech.settings = nextSettings;
+  if (previousEngine === "supertonic" && nextSettings.engine !== "supertonic") {
+    await releaseSupertonicModel();
+  }
+  return nextSettings;
 }
 
 async function voiceStyle(voice) {
@@ -1341,8 +1370,8 @@ function registerIpc() {
   ipcMain.handle("reader:get-state", () => publicState());
   ipcMain.handle("reader:attach-active", () => attachActive({ reason: "manual" }));
   ipcMain.handle("reader:download-assets", () => downloadAssets());
-  ipcMain.handle("reader:set-settings", (_event, settings) => {
-    speech.settings = normalizedSettings(settings);
+  ipcMain.handle("reader:set-settings", async (_event, settings) => {
+    await applySpeechSettings(settings);
     if (!speech.settings.enabled) {
       speech.queue = [];
       cancelCurrentSpeech("Reading is off.");
@@ -1352,13 +1381,13 @@ function registerIpc() {
     }
     return publicState();
   });
-  ipcMain.handle("reader:test-voice", (_event, settings) => {
-    speech.settings = normalizedSettings(settings);
+  ipcMain.handle("reader:test-voice", async (_event, settings) => {
+    await applySpeechSettings(settings);
     queueOutput({ text: "QDex is listening for new visible Codex output." }, true);
     return publicState();
   });
-  ipcMain.handle("reader:read-text", (_event, payload = {}) => {
-    speech.settings = normalizedSettings(payload.settings || speech.settings);
+  ipcMain.handle("reader:read-text", async (_event, payload = {}) => {
+    await applySpeechSettings(payload.settings || speech.settings);
     queueOutput({ text: String(payload.text || "") }, true);
     return publicState();
   });
@@ -1439,4 +1468,8 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  void releaseSupertonicModel();
 });
