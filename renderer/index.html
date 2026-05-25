@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QDex</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="overlay-shell" aria-label="QDex overlay">
+      <section class="glass-panel">
+        <header class="overlay-head">
+          <div class="brand-block">
+            <div class="session-block">
+              <div class="project-row">
+                <span class="session-light" id="session-light" aria-hidden="true"></span>
+                <p id="project-name">CODEX</p>
+              </div>
+              <output id="session-title">Starting up</output>
+            </div>
+          </div>
+
+          <div class="context-cluster" id="context-cluster" title="No context sample yet">
+            <div class="context-gauge" id="context-gauge" style="--context-gauge: 0deg">
+              <svg class="brain-icon" viewBox="0 0 64 64" aria-hidden="true">
+                <path d="M29 8c-5 0-9 3-11 8-7 0-12 5-12 12 0 2 1 4 2 6-4 2-6 5-6 10 0 5 3 9 8 10 1 6 6 10 12 10 3 0 6-1 8-3" />
+                <path d="M29 8c7 0 12 5 12 12v33c0 6-5 11-12 11" />
+                <path d="M18 16c5 0 8 3 8 8M10 34c2-3 6-4 10-2M15 48c0 5 4 8 9 8M24 36c4-2 8-1 10 2M29 49c2 4 5 6 10 5" />
+                <path d="M41 20h9l4-5M41 32h14M41 44h9l4 5" />
+                <circle cx="56" cy="15" r="4" />
+                <circle cx="58" cy="32" r="4" />
+                <circle cx="56" cy="49" r="4" />
+              </svg>
+            </div>
+          </div>
+
+          <div class="usage-cluster" id="usage-cluster" title="No usage sample yet">
+            <div class="usage-gauge" id="usage-gauge" style="--gauge: 0deg">
+              <span id="usage-percent">--</span>
+            </div>
+            <div class="reset-time" title="Reset time">
+              <span class="clock-icon" aria-hidden="true"></span>
+              <span id="reset-time">--:--</span>
+            </div>
+          </div>
+
+          <div class="controls">
+            <button class="icon-button settings-button" id="settings-open" type="button" title="Voice settings" aria-label="Voice settings">
+              <span class="settings-icon" aria-hidden="true"></span>
+            </button>
+            <label class="switch" title="Read new visible Codex output">
+              <input id="enabled" type="checkbox" checked />
+              <span></span>
+            </label>
+            <button class="icon-button" id="minimize" type="button" title="Hide to tray and keep listening" aria-label="Hide to tray">
+              <span aria-hidden="true">_</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="wave-panel" aria-label="Reader activity">
+          <canvas id="waveform" aria-hidden="true"></canvas>
+          <button class="wave-seek" id="wave-seek" type="button" title="Seek current voice playback" aria-label="Seek current voice playback"></button>
+          <div class="scanline"></div>
+        </section>
+
+        <footer class="overlay-foot">
+          <div class="playback-controls" aria-label="Voice controls">
+            <button class="transport-button" id="slower" type="button" title="Slower" aria-label="Slower">
+              <span class="transport-icon icon-slower" aria-hidden="true"></span>
+            </button>
+            <button class="transport-button" id="play-pause" type="button" title="Play or pause" aria-label="Play or pause" data-mode="play">
+              <span class="transport-icon icon-play-pause" aria-hidden="true"></span>
+            </button>
+            <button class="transport-button" id="faster" type="button" title="Faster" aria-label="Faster">
+              <span class="transport-icon icon-faster" aria-hidden="true"></span>
+            </button>
+            <button class="transport-button" id="skip-read" type="button" title="Skip current read" aria-label="Skip current read">
+              <span class="transport-icon icon-skip" aria-hidden="true"></span>
+            </button>
+            <button class="transport-button" id="read-again" type="button" title="Read again" aria-label="Read again">
+              <span class="transport-icon icon-replay" aria-hidden="true"></span>
+            </button>
+          </div>
+          <output id="status">Waiting for work</output>
+        </footer>
+
+        <section class="settings-panel" id="settings-panel" hidden aria-label="Voice settings">
+          <header>
+            <strong>Voice Settings</strong>
+            <button id="settings-close" type="button">Close</button>
+          </header>
+          <div class="settings-grid">
+            <label>
+              <span>Engine</span>
+              <select id="engine">
+                <option value="edge">Edge Neural</option>
+                <option value="windows">Windows Local</option>
+                <option value="supertonic">Supertonic Local</option>
+              </select>
+            </label>
+            <label class="edge-only">
+              <span>Edge voice</span>
+              <select id="edge-voice"></select>
+            </label>
+            <label class="windows-only">
+              <span>Windows mode</span>
+              <select id="windows-mode">
+                <option value="auto">Auto FR / EN</option>
+                <option value="manual">Forced voice</option>
+              </select>
+            </label>
+            <label class="windows-only manual-windows-only">
+              <span>Windows voice</span>
+              <select id="windows-voice"></select>
+            </label>
+            <label class="supertonic-only">
+              <span>Local voice</span>
+              <select id="voice"></select>
+            </label>
+            <label class="span-2">
+              <span>Speed <output id="speed-value">1.05</output></span>
+              <input id="speed" type="range" min="0.7" max="1.5" step="0.05" value="1.05" />
+            </label>
+            <label class="span-2 edge-only">
+              <span>Pitch <output id="edge-pitch-value">0Hz</output></span>
+              <input id="edge-pitch" type="range" min="-50" max="50" step="5" value="0" />
+            </label>
+            <label class="span-2 supertonic-only">
+              <span>Steps <output id="steps-value">4</output></span>
+              <input id="steps" type="range" min="2" max="12" step="1" value="4" />
+            </label>
+            <label class="span-2">
+              <span>Volume <output id="volume-value">0.85</output></span>
+              <input id="volume" type="range" min="0" max="1" step="0.05" value="0.85" />
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button id="download" type="button">Download local model</button>
+            <button id="test" type="button" title="Play a voice test">Test voice</button>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div class="hidden-controls" aria-hidden="true">
+      <span id="session-folder">-</span>
+      <span id="session-log">-</span>
+      <ol id="outputs"></ol>
+    </div>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

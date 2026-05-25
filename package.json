@@ -1,0 +1,47 @@
+{
+  "name": "qdex",
+  "version": "0.1.0",
+  "private": false,
+  "license": "GPL-3.0-only",
+  "author": "QDex contributors",
+  "description": "Standalone Edge/Supertonic reader and usage overlay for new visible Codex output.",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --devtools",
+    "fetch:assets": "node scripts/fetch-assets.mjs",
+    "package:win": "electron-builder --win dir"
+  },
+  "dependencies": {
+    "@andresaya/edge-tts": "^1.8.0",
+    "onnxruntime-node": "^1.22.0"
+  },
+  "devDependencies": {
+    "electron": "^42.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "local.qdex",
+    "productName": "QDex",
+    "asar": false,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "renderer/**/*",
+      "supertonic/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        "dir"
+      ]
+    }
+  }
+}
