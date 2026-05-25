@@ -347,16 +347,15 @@ function rebuildWaveFrame(width) {
     return;
   }
 
-  const columns = Math.max(48, Math.ceil(width / 4) + 1);
+  const columns = Math.max(24, Math.ceil(width / 7));
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const sourceSpan = Math.max(columns * 5, Math.floor(sampleRate * 0.09));
+  const sourceSpan = Math.max(columns * 3, Math.floor(sampleRate * 0.22));
   const sourceStart = clampNumber(centerIndex - Math.floor(sourceSpan / 2), 0, Math.max(0, data.length - 1));
   const nextFrame = [];
 
   for (let column = 0; column < columns; column += 1) {
-    const mirrored = column <= columns / 2 ? column : columns - column - 1;
-    const position = mirrored / Math.max(1, Math.floor(columns / 2));
+    const position = column / Math.max(1, columns - 1);
     const sourceIndex = clampNumber(
       sourceStart + Math.floor(position * sourceSpan),
       0,
@@ -370,7 +369,7 @@ function rebuildWaveFrame(width) {
         strongest = sample;
       }
     }
-    const edgeFade = Math.sin((column / Math.max(1, columns - 1)) * Math.PI);
+    const edgeFade = 0.62 + Math.sin((column / Math.max(1, columns - 1)) * Math.PI) * 0.38;
     nextFrame.push(strongest * edgeFade);
   }
 
@@ -399,17 +398,46 @@ function compactWaveformBuffer(decoded) {
   return { data, sampleRate: WAVEFORM_SAMPLE_RATE };
 }
 
-function waveformSampleAt(x, width) {
-  if (!wave.frame.length) {
-    return 0;
+function fillRoundedBar(ctx, x, y, width, height, radius) {
+  if (typeof ctx.roundRect === "function") {
+    ctx.beginPath();
+    ctx.roundRect(x, y, width, height, radius);
+    ctx.fill();
+    return;
   }
+  ctx.fillRect(x, y, width, height);
+}
 
-  const exact = clampNumber((x / Math.max(1, width)) * (wave.frame.length - 1), 0, wave.frame.length - 1);
-  const left = Math.floor(exact);
-  const right = Math.min(wave.frame.length - 1, left + 1);
-  const mix = exact - left;
-  const audioSample = wave.frame[left] * (1 - mix) + wave.frame[right] * mix;
-  return clampNumber(audioSample, -1, 1);
+function drawVisualizerBars(ctx, bounds, intensity, active) {
+  const frame = active && wave.frame.length
+    ? wave.frame
+    : Array.from({ length: Math.max(24, Math.ceil(bounds.width / 7)) }, (_value, index) => {
+        const nowSeconds = performance.now() / 1000;
+        return Math.sin(nowSeconds * 1.8 + index * 0.72) * 0.026;
+      });
+  const barCount = frame.length;
+  const step = bounds.width / Math.max(1, barCount);
+  const barWidth = clampNumber(step * 0.56, 2, 5);
+  const baseY = bounds.height - 5;
+  const maxHeight = Math.max(4, bounds.height - 10);
+
+  ctx.shadowBlur = active ? 7 : 0;
+  ctx.shadowColor = "rgba(238, 241, 242, 0.28)";
+  for (let index = 0; index < barCount; index += 1) {
+    const sample = Math.abs(frame[index] || 0);
+    const idle = active ? 0 : 0.045 + Math.abs(frame[index] || 0);
+    const energy = active
+      ? clampNumber(sample * (4.6 + intensity * 3.2) + intensity * 0.22, 0.035, 1)
+      : clampNumber(idle, 0.03, 0.11);
+    const eased = active ? Math.pow(energy, 0.68) : energy;
+    const height = clampNumber(eased * maxHeight, active ? 3 : 2, maxHeight);
+    const x = index * step + (step - barWidth) / 2;
+    const y = baseY - height;
+    const alpha = active ? clampNumber(0.32 + eased * 0.58, 0.36, 0.9) : 0.22;
+    ctx.fillStyle = `rgba(232, 238, 242, ${alpha})`;
+    fillRoundedBar(ctx, x, y, barWidth, height, Math.min(2.5, barWidth / 2));
+  }
+  ctx.shadowBlur = 0;
 }
 
 function resetWaveformData(player = null) {
@@ -466,46 +494,17 @@ function drawWaveform() {
   updateSeekProgress();
 
   ctx.lineWidth = 1;
-  ctx.strokeStyle = "rgba(220, 226, 230, 0.08)";
-  for (let y = 10; y < bounds.height; y += 14) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(bounds.width, y);
-    ctx.stroke();
-  }
-
-  if (intensity <= 0.012 || !wave.decoded || wave.player !== audio) {
-    ctx.lineWidth = 1.8;
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = statusState === "error" ? "rgba(232, 135, 135, 0.66)" : "rgba(213, 220, 225, 0.32)";
-    ctx.beginPath();
-    ctx.moveTo(0, center);
-    ctx.lineTo(bounds.width, center);
-    ctx.stroke();
-    requestAnimationFrame(drawWaveform);
-    return;
-  }
-
-  ctx.lineWidth = 2;
-  ctx.shadowBlur = 8;
-  ctx.shadowColor = "rgba(220, 226, 230, 0.42)";
-  ctx.strokeStyle = "rgba(232, 238, 242, 0.88)";
+  ctx.strokeStyle = "rgba(238, 241, 242, 0.08)";
   ctx.beginPath();
-  let smoothedY = center;
-  rebuildWaveFrame(bounds.width);
-  for (let x = 0; x <= bounds.width; x += 4) {
-    const sample = waveformSampleAt(x, bounds.width);
-    const amplified = clampNumber(sample * (2.8 + intensity * 4.8), -1, 1);
-    const targetY = clampNumber(center + amplified * bounds.height * 0.45, 4, bounds.height - 4);
-    smoothedY += (targetY - smoothedY) * 0.58;
-    if (x === 0) {
-      ctx.moveTo(x, smoothedY);
-    } else {
-      ctx.lineTo(x, smoothedY);
-    }
-  }
+  ctx.moveTo(0, center);
+  ctx.lineTo(bounds.width, center);
   ctx.stroke();
-  ctx.shadowBlur = 0;
+
+  const active = intensity > 0.012 && wave.decoded && wave.player === audio;
+  if (active) {
+    rebuildWaveFrame(bounds.width);
+  }
+  drawVisualizerBars(ctx, bounds, intensity, active);
 
   requestAnimationFrame(drawWaveform);
 }
