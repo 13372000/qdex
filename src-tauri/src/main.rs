@@ -940,6 +940,18 @@ static DIRECTIVE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"::[A-Za-z0-9_-]+\{[^}]*\}").expect("valid directive regex"));
 static INLINE_CODE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`[^`]+`").expect("valid inline code regex"));
+static MARKDOWN_HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s{0,3}#{1,6}\s+").expect("valid heading regex"));
+static MARKDOWN_QUOTE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s{0,3}>\s?").expect("valid quote regex"));
+static MARKDOWN_BULLET_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:[-*+]\s+|\d+[.)]\s+)").expect("valid bullet regex"));
+static MARKDOWN_EMPHASIS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\*{1,3}([^*\n]+?)\*{1,3}").expect("valid emphasis regex"));
+static MARKDOWN_UNDERSCORE_STRONG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"__([^_\n]+?)__").expect("valid underscore emphasis regex"));
+static MARKDOWN_MARKER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[*_]{1,3}").expect("valid marker regex"));
 static URL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"https?://\S+").expect("valid url regex"));
 static WINDOWS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -965,6 +977,9 @@ fn looks_like_code_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return false;
+    }
+    if trimmed.len() >= 3 && trimmed.chars().all(|character| "*-_ ".contains(character)) {
+        return true;
     }
     if line.starts_with("    ") || line.starts_with('\t') {
         return true;
@@ -1033,16 +1048,25 @@ fn sanitize_speech_line(line: &str) -> String {
     clean = MARKDOWN_LINK_RE.replace_all(&clean, "$1").into_owned();
     clean = DIRECTIVE_RE.replace_all(&clean, " ").into_owned();
     clean = INLINE_CODE_RE.replace_all(&clean, " ").into_owned();
+    clean = MARKDOWN_HEADING_RE.replace_all(&clean, "").into_owned();
+    clean = MARKDOWN_QUOTE_RE.replace_all(&clean, "").into_owned();
+    clean = MARKDOWN_BULLET_RE.replace_all(&clean, "").into_owned();
+    clean = MARKDOWN_EMPHASIS_RE.replace_all(&clean, "$1").into_owned();
+    clean = MARKDOWN_UNDERSCORE_STRONG_RE
+        .replace_all(&clean, "$1")
+        .into_owned();
     clean = URL_RE.replace_all(&clean, " ").into_owned();
     clean = WINDOWS_PATH_RE.replace_all(&clean, " ").into_owned();
     clean = RELATIVE_PATH_RE.replace_all(&clean, " ").into_owned();
     clean = FILENAME_RE.replace_all(&clean, " ").into_owned();
     clean = HEX_HASH_RE.replace_all(&clean, " ").into_owned();
+    clean = MARKDOWN_MARKER_RE.replace_all(&clean, "").into_owned();
 
     let trimmed = clean
         .trim()
         .trim_start_matches("- ")
         .trim_start_matches("* ")
+        .trim_start_matches("+ ")
         .trim();
     MULTISPACE_RE.replace_all(trimmed, " ").trim().to_string()
 }
@@ -1782,6 +1806,31 @@ Here is the user-facing summary."#;
     fn speech_cleaner_keeps_normal_sentences() {
         let text = "QDex reads new Codex responses aloud and stays quiet in the tray.";
         assert_eq!(clean_speech_text(text), text);
+    }
+
+    #[test]
+    fn speech_cleaner_removes_markdown_markers() {
+        let text = r#"# Update
+
+**Fixed** the reader loop.
+
+* Added cleaner speech text.
+* Removed *noisy* Markdown markers.
+
+> This should read as normal text.
+
+---"#;
+
+        let clean = clean_speech_text(text);
+
+        assert!(clean.contains("Update"));
+        assert!(clean.contains("Fixed the reader loop."));
+        assert!(clean.contains("Added cleaner speech text."));
+        assert!(clean.contains("Removed noisy Markdown markers."));
+        assert!(clean.contains("This should read as normal text."));
+        assert!(!clean.contains('*'));
+        assert!(!clean.contains('#'));
+        assert!(!clean.contains('>'));
     }
 }
 
