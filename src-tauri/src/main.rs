@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use base64::{engine::general_purpose, Engine as _};
 use edge_tts_rust::{Boundary, EdgeTtsClient, SpeakOptions};
 use serde::Serialize;
