@@ -1,4 +1,5 @@
 use base64::{engine::general_purpose, Engine as _};
+use edge_tts_rust::{Boundary, EdgeTtsClient, SpeakOptions};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -52,7 +53,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             enabled: true,
-            engine: "windows".into(),
+            engine: "edge".into(),
             edge_voice: "en-US-AvaMultilingualNeural".into(),
             edge_pitch: 0,
             windows_voice_mode: "auto".into(),
@@ -211,7 +212,7 @@ fn public_state(state: &ReaderState) -> PublicState {
             .iter()
             .map(|voice| (*voice).to_string())
             .collect(),
-        supported_engines: vec!["windows".into()],
+        supported_engines: vec!["edge".into(), "windows".into()],
         settings: state.settings.clone(),
         usage: state.current_usage.clone(),
         activity: state.current_activity.clone(),
@@ -241,6 +242,9 @@ fn edge_voices() -> Vec<VoiceInfo> {
             "Female",
         ),
         ("fr-FR-DeniseNeural", "Denise", "fr-FR", "Female"),
+        ("fr-CA-SylvieNeural", "Sylvie", "fr-CA", "Female"),
+        ("en-US-EmmaNeural", "Emma", "en-US", "Female"),
+        ("en-GB-SoniaNeural", "Sonia", "en-GB", "Female"),
         (
             "en-US-AndrewMultilingualNeural",
             "Andrew Multilingual",
@@ -315,10 +319,25 @@ fn normalize_settings(input: &Value, previous: &Settings, voices: &[VoiceInfo]) 
         default_windows_voice(voices, "en")
     };
 
+    let requested_engine = value_string(input, "engine", &previous.engine);
+    let engine = match requested_engine.as_str() {
+        "windows" => "windows".to_string(),
+        _ => "edge".to_string(),
+    };
+    let requested_edge_voice = value_string(input, "edgeVoice", &previous.edge_voice);
+    let edge_voice = if edge_voices()
+        .iter()
+        .any(|voice| voice.id == requested_edge_voice)
+    {
+        requested_edge_voice
+    } else {
+        "en-US-AvaMultilingualNeural".into()
+    };
+
     Settings {
         enabled,
-        engine: "windows".into(),
-        edge_voice: value_string(input, "edgeVoice", &previous.edge_voice),
+        engine,
+        edge_voice,
         edge_pitch: value_i32(input, "edgePitch", previous.edge_pitch).clamp(-50, 50),
         windows_voice_mode,
         windows_voice,
@@ -1179,6 +1198,60 @@ async fn synthesize_windows_text(
     }))
 }
 
+fn signed_percent(value: i32) -> String {
+    if value >= 0 {
+        format!("+{value}%")
+    } else {
+        format!("{value}%")
+    }
+}
+
+fn signed_hertz(value: i32) -> String {
+    if value >= 0 {
+        format!("+{value}Hz")
+    } else {
+        format!("{value}Hz")
+    }
+}
+
+async fn synthesize_edge_text(text: &str, settings: &Settings) -> Result<Value, String> {
+    let clean = clean_speech_text(text);
+    if clean.is_empty() {
+        return Ok(Value::Null);
+    }
+
+    let speed = clamp(settings.speed, 0.7, 1.5, 1.0);
+    let rate = ((speed - 1.0) * 100.0).round() as i32;
+    let pitch = settings.edge_pitch.clamp(-50, 50);
+    let client = EdgeTtsClient::builder()
+        .ws_pool_size(0)
+        .ws_warmup(false)
+        .request_chunk_reuse(true)
+        .build()
+        .map_err(|error| error.to_string())?;
+    let result = client
+        .synthesize(
+            clean.clone(),
+            SpeakOptions {
+                voice: settings.edge_voice.clone(),
+                rate: signed_percent(rate),
+                volume: "+0%".into(),
+                pitch: signed_hertz(pitch),
+                boundary: Boundary::Sentence,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(json!({
+        "audioUrl": format!("data:audio/mpeg;base64,{}", general_purpose::STANDARD.encode(result.audio)),
+        "durationSeconds": estimate_speech_duration(&clean, speed),
+        "speechSpeed": speed,
+        "voiceId": settings.edge_voice,
+        "volume": settings.volume
+    }))
+}
+
 fn queue_output(app: &AppHandle, shared: &SharedState, text: String, force: bool) {
     if clean_speech_text(&text).is_empty() {
         return;
@@ -1260,12 +1333,22 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
             continue;
         }
 
+        let is_edge = settings.engine == "edge";
         status(
             &app,
             "working",
-            "Rendering visible output with Windows local TTS.",
+            if is_edge {
+                "Rendering visible output with Edge Neural TTS."
+            } else {
+                "Rendering visible output with Windows local TTS."
+            },
         );
-        match synthesize_windows_text(&item.text, &settings, &voices).await {
+        let synthesized = if is_edge {
+            synthesize_edge_text(&item.text, &settings).await
+        } else {
+            synthesize_windows_text(&item.text, &settings, &voices).await
+        };
+        match synthesized {
             Ok(clip) if !clip.is_null() => {
                 let cancelled =
                     shared.lock().expect("reader state poisoned").cancel_version != token;
@@ -1273,14 +1356,17 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                     continue;
                 }
                 emit_payload(&app, "reader:audio", clip.clone());
-                let language = clip.get("language").and_then(Value::as_str).unwrap_or("");
                 status(
                     &app,
                     "speaking",
-                    match language {
-                        "fr" => "Reading visible Codex output with Windows French TTS.",
-                        "en" => "Reading visible Codex output with Windows English TTS.",
-                        _ => "Reading visible Codex output with Windows local TTS.",
+                    if is_edge {
+                        "Reading visible Codex output with Edge Neural TTS."
+                    } else {
+                        match clip.get("language").and_then(Value::as_str).unwrap_or("") {
+                            "fr" => "Reading visible Codex output with Windows French TTS.",
+                            "en" => "Reading visible Codex output with Windows English TTS.",
+                            _ => "Reading visible Codex output with Windows local TTS.",
+                        }
                     },
                 );
                 let duration_ms = clip
@@ -1297,7 +1383,14 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                     .expect("reader state poisoned")
                     .speech_queue
                     .clear();
-                status(&app, "error", &format!("Windows speech failed: {error}"));
+                status(
+                    &app,
+                    "error",
+                    &format!(
+                        "{} speech failed: {error}",
+                        if is_edge { "Edge" } else { "Windows" }
+                    ),
+                );
             }
         }
     }
@@ -1328,7 +1421,7 @@ async fn attach_active(
 
 #[tauri::command]
 fn download_assets() -> Result<(), String> {
-    Err("Supertonic asset download is not part of the Tauri prototype yet.".into())
+    Err("Local model downloads are not used in this Tauri build.".into())
 }
 
 #[tauri::command]

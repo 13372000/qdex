@@ -179,8 +179,9 @@ function syncEngineControls() {
   document.body.dataset.ttsEngine = engine;
   document.body.dataset.windowsVoiceMode = nodes.windowsMode.value || "auto";
 
-  const canTest = engine === "edge" || engine === "windows" || Boolean(state?.assetsReady);
-  const needsAssets = engine === "supertonic";
+  const supportedEngines = state?.supportedEngines || ["edge", "windows"];
+  const canTest = supportedEngines.includes(engine);
+  const needsAssets = false;
   nodes.test.disabled = !canTest;
   nodes.download.disabled = needsAssets ? Boolean(state?.assetsReady) : true;
 }
@@ -534,7 +535,7 @@ function showState(nextState) {
   );
   nodes.voice.replaceChildren(...(state.voices || []).map(option));
 
-  const supportedEngines = state.supportedEngines || ["edge", "windows", "supertonic"];
+  const supportedEngines = state.supportedEngines || ["edge", "windows"];
   for (const engineOption of nodes.engine.options) {
     engineOption.disabled = !supportedEngines.includes(engineOption.value);
   }
