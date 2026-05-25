@@ -1,0 +1,15 @@
+{
+  "name": "q-link",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram to Codex Desktop clipboard bridge.",
+  "scripts": {
+    "start": "node qlink.js",
+    "tray": "powershell -NoProfile -STA -ExecutionPolicy Bypass -File scripts/q-link-tray.ps1",
+    "check": "node --check qlink.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
