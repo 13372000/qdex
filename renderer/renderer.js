@@ -341,7 +341,15 @@ function waveIntensity() {
   return wave.level;
 }
 
-function rebuildWaveFrame(width) {
+function barShape(index, count) {
+  const position = index / Math.max(1, count - 1);
+  const centerLift = Math.sin(position * Math.PI);
+  const hash = Math.sin((index + 1) * 12.9898) * 43758.5453;
+  const variation = hash - Math.floor(hash);
+  return clampNumber(0.34 + centerLift * 0.2 + variation * 0.46, 0.32, 1);
+}
+
+function rebuildWaveFrame(width, intensity) {
   if (!audio || !wave.decoded || wave.player !== audio) {
     wave.frame = [];
     return;
@@ -350,27 +358,32 @@ function rebuildWaveFrame(width) {
   const columns = Math.max(24, Math.ceil(width / 7));
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const sourceSpan = Math.max(columns * 3, Math.floor(sampleRate * 0.22));
-  const sourceStart = clampNumber(centerIndex - Math.floor(sourceSpan / 2), 0, Math.max(0, data.length - 1));
+  const windowSize = Math.max(32, Math.floor(sampleRate * 0.045));
+  const start = clampNumber(centerIndex - Math.floor(windowSize / 2), 0, Math.max(0, data.length - 1));
+  const end = clampNumber(start + windowSize, start + 1, data.length);
+  let sum = 0;
+  let peak = 0;
+  let count = 0;
+
+  for (let index = start; index < end; index += 1) {
+    const sample = data[index] || 0;
+    sum += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+    count += 1;
+  }
+
+  const rms = Math.sqrt(sum / Math.max(1, count));
+  const energy = clampNumber((rms * 5.6) + (peak * 0.45) + intensity * 0.42, 0, 1);
+  const previous = wave.frame.length === columns ? wave.frame : new Array(columns).fill(0);
+  const nowSeconds = performance.now() / 1000;
   const nextFrame = [];
 
   for (let column = 0; column < columns; column += 1) {
-    const position = column / Math.max(1, columns - 1);
-    const sourceIndex = clampNumber(
-      sourceStart + Math.floor(position * sourceSpan),
-      0,
-      Math.max(0, data.length - 1)
-    );
-    let strongest = 0;
-    for (let offset = -10; offset <= 10; offset += 2) {
-      const index = clampNumber(sourceIndex + offset, 0, Math.max(0, data.length - 1));
-      const sample = data[index] || 0;
-      if (Math.abs(sample) > Math.abs(strongest)) {
-        strongest = sample;
-      }
-    }
-    const edgeFade = 0.62 + Math.sin((column / Math.max(1, columns - 1)) * Math.PI) * 0.38;
-    nextFrame.push(strongest * edgeFade);
+    const pulse = 0.88 + Math.sin(nowSeconds * (2.2 + (column % 5) * 0.13) + column * 0.74) * 0.12;
+    const target = clampNumber(energy * barShape(column, columns) * pulse, 0.018, 1);
+    const prior = previous[column] || 0;
+    const smoothing = target > prior ? 0.5 : 0.24;
+    nextFrame.push(prior + (target - prior) * smoothing);
   }
 
   wave.frame = nextFrame;
@@ -502,7 +515,7 @@ function drawWaveform() {
 
   const active = intensity > 0.012 && wave.decoded && wave.player === audio;
   if (active) {
-    rebuildWaveFrame(bounds.width);
+    rebuildWaveFrame(bounds.width, intensity);
   }
   drawVisualizerBars(ctx, bounds, intensity, active);
 
