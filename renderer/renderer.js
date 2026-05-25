@@ -53,7 +53,7 @@ let statusState = "info";
 let usageState = null;
 const audioQueue = [];
 const MAX_AUDIO_QUEUE = 8;
-const WAVEFORM_SAMPLE_RATE = 160;
+const WAVEFORM_SAMPLE_RATE = 1000;
 const SPEED_STEP = 0.05;
 const IDLE_MESSAGES = [
   "Waiting for work.",
@@ -320,7 +320,7 @@ function waveIntensity() {
 
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const windowSize = Math.max(4, Math.floor(sampleRate * 0.08));
+  const windowSize = Math.max(32, Math.floor(sampleRate * 0.032));
   const start = clampNumber(centerIndex - Math.floor(windowSize / 2), 0, Math.max(0, data.length - 1));
   const end = clampNumber(start + windowSize, start + 1, data.length);
   let sum = 0;
@@ -362,15 +362,16 @@ function rebuildWaveFrame(width) {
       0,
       Math.max(0, data.length - 1)
     );
-    let total = 0;
-    let count = 0;
+    let strongest = 0;
     for (let offset = -10; offset <= 10; offset += 2) {
       const index = clampNumber(sourceIndex + offset, 0, Math.max(0, data.length - 1));
-      total += data[index] || 0;
-      count += 1;
+      const sample = data[index] || 0;
+      if (Math.abs(sample) > Math.abs(strongest)) {
+        strongest = sample;
+      }
     }
     const edgeFade = Math.sin((column / Math.max(1, columns - 1)) * Math.PI);
-    nextFrame.push((total / Math.max(1, count)) * edgeFade);
+    nextFrame.push(strongest * edgeFade);
   }
 
   wave.frame = nextFrame;
@@ -385,13 +386,14 @@ function compactWaveformBuffer(decoded) {
   for (let index = 0; index < targetLength; index += 1) {
     const start = Math.floor(index * sourceRate / WAVEFORM_SAMPLE_RATE);
     const end = Math.min(source.length, Math.max(start + 1, Math.floor((index + 1) * sourceRate / WAVEFORM_SAMPLE_RATE)));
-    let total = 0;
-    let count = 0;
+    let strongest = 0;
     for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) {
-      total += source[sourceIndex] || 0;
-      count += 1;
+      const sample = source[sourceIndex] || 0;
+      if (Math.abs(sample) > Math.abs(strongest)) {
+        strongest = sample;
+      }
     }
-    data[index] = total / Math.max(1, count);
+    data[index] = strongest;
   }
 
   return { data, sampleRate: WAVEFORM_SAMPLE_RATE };
