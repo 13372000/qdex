@@ -20,14 +20,31 @@ It watches local Codex session logs, follows the active session, and speaks only
 - Hides to the Windows system tray while continuing to listen
 - Runs as a compact transparent always-on-top Tauri overlay
 
-## Requirements
+## Install
+
+Packaged Windows builds run directly and do not require Node.js or Rust.
+
+Download the Windows installer from GitHub Releases when a release asset is published, then run:
+
+```text
+QDex_0.1.0_x64-setup.exe
+```
+
+If the repository was cloned or downloaded as source code, use the build-from-source steps below.
+
+## User Requirements
 
 - Windows 10 or later
-- Node.js 22 or later
-- Rust stable toolchain
 - A local Codex installation that writes session logs under the current Windows account
 
-## Run
+## Development Requirements
+
+These are only needed for development or building from source:
+
+- Node.js 22 or later
+- Rust stable toolchain
+
+## Run From Source
 
 ```powershell
 npm install
@@ -57,7 +74,7 @@ The current QDex release supports two speech engines:
 - Edge Neural TTS for online neural voices without an API key
 - Windows Local TTS for built-in offline SAPI voices
 
-## Build
+## Build From Source
 
 ```powershell
 npm install
