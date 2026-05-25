@@ -534,7 +534,16 @@ function showState(nextState) {
   );
   nodes.voice.replaceChildren(...(state.voices || []).map(option));
 
-  const saved = { ...(state.settings || {}), ...readSavedSettings() };
+  const supportedEngines = state.supportedEngines || ["edge", "windows", "supertonic"];
+  for (const engineOption of nodes.engine.options) {
+    engineOption.disabled = !supportedEngines.includes(engineOption.value);
+  }
+
+  const savedLocal = readSavedSettings();
+  if (savedLocal.engine && !supportedEngines.includes(savedLocal.engine)) {
+    savedLocal.engine = state.settings?.engine || supportedEngines[0] || "windows";
+  }
+  const saved = { ...(state.settings || {}), ...savedLocal };
   syncEnabledControls(Boolean(saved.enabled));
   nodes.engine.value = saved.engine || "edge";
   nodes.edgeVoice.value = saved.edgeVoice || "en-US-AvaMultilingualNeural";
