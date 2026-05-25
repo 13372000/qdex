@@ -16,6 +16,7 @@ It watches local Codex session logs, follows the active session, and speaks only
 - Shows observable activity such as tool calls, commands, patches, replies, and usage updates
 - Displays local usage/reset status from Codex `token_count` events
 - Supports Edge Neural TTS and Windows Local TTS
+- Can publish an optional local broadcast for other apps that want to react to QDex output
 - Requires no API keys for supported speech engines
 - Hides to the Windows system tray while continuing to listen
 - Runs as a compact transparent always-on-top Tauri overlay
@@ -70,6 +71,16 @@ If Codex logs are stored outside the default location, set:
 ```text
 QDEX_CODEX_SESSIONS_ROOT=C:\path\to\sessions
 ```
+
+QDex is first a reader: it watches Codex output and speaks it aloud. It can also publish a small local broadcast so another app can react to what QDex just saw or spoke, for example to reuse the generated audio.
+
+This broadcast is enabled by default and does not change speech behavior.
+
+```text
+%USERPROFILE%\.qdex\broadcast.jsonl
+```
+
+Set `QDEX_BROADCAST_ENABLED=0` to disable these broadcasts. The path can be overridden with `QDEX_BRIDGE_DIR` and `QDEX_BROADCAST_PATH`.
 
 ## TTS Engines
 

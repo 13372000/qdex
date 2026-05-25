@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
     env, fs,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, LazyLock, Mutex},
@@ -104,6 +104,8 @@ struct PublicSession {
 struct SpeechItem {
     text: String,
     force: bool,
+    source: String,
+    metadata: Value,
 }
 
 struct ReaderState {
@@ -360,6 +362,45 @@ fn codex_sessions_root() -> PathBuf {
     env::var_os("QDEX_CODEX_SESSIONS_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| codex_home().join(".codex").join("sessions"))
+}
+
+fn qdex_bridge_dir() -> PathBuf {
+    env::var_os("QDEX_BRIDGE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| codex_home().join(".qdex"))
+}
+
+fn qdex_broadcast_path() -> PathBuf {
+    env::var_os("QDEX_BROADCAST_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| qdex_bridge_dir().join("broadcast.jsonl"))
+}
+
+fn qdex_broadcast_enabled() -> bool {
+    env::var("QDEX_BROADCAST_ENABLED")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(
+                normalized.as_str(),
+                "0" | "false" | "off" | "no" | "disabled"
+            )
+        })
+        .unwrap_or(true)
+}
+
+fn append_bridge_broadcast(payload: &Value) {
+    if !qdex_broadcast_enabled() {
+        return;
+    }
+
+    let path = qdex_broadcast_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{payload}");
+    }
 }
 
 fn collect_jsonl_files(directory: &Path, files: &mut Vec<(PathBuf, SystemTime)>) {
@@ -897,7 +938,7 @@ async fn read_added_lines(app: &AppHandle, shared: &SharedState) {
     session.carry = lines.pop().unwrap_or_default();
 
     for line in lines {
-        let clean = line.trim();
+        let clean = line.trim().trim_start_matches('\u{feff}');
         if clean.is_empty() {
             continue;
         }
@@ -916,6 +957,12 @@ async fn read_added_lines(app: &AppHandle, shared: &SharedState) {
         }
         if let Some(output) = visible_codex_output(&row) {
             emit_payload(app, "reader:output", output.clone());
+            append_bridge_broadcast(&json!({
+                "type": "output",
+                "source": "codex-log",
+                "createdAt": now(),
+                "output": output
+            }));
             if let Some(text) = output.get("text").and_then(Value::as_str) {
                 queue_output(app, shared, text.to_string(), false);
             }
@@ -1388,6 +1435,17 @@ async fn synthesize_edge_text(text: &str, settings: &Settings) -> Result<Value, 
 }
 
 fn queue_output(app: &AppHandle, shared: &SharedState, text: String, force: bool) {
+    queue_output_with_metadata(app, shared, text, force, "codex-log".into(), Value::Null);
+}
+
+fn queue_output_with_metadata(
+    app: &AppHandle,
+    shared: &SharedState,
+    text: String,
+    force: bool,
+    source: String,
+    metadata: Value,
+) {
     if clean_speech_text(&text).is_empty() {
         return;
     }
@@ -1409,7 +1467,12 @@ fn queue_output(app: &AppHandle, shared: &SharedState, text: String, force: bool
                 ),
             );
         }
-        state.speech_queue.push_back(SpeechItem { text, force });
+        state.speech_queue.push_back(SpeechItem {
+            text,
+            force,
+            source,
+            metadata,
+        });
         if state.speech_busy {
             false
         } else {
@@ -1515,6 +1578,14 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                     state.finished_playback_id = None;
                 }
                 emit_payload(&app, "reader:audio", clip.clone());
+                append_bridge_broadcast(&json!({
+                    "type": "audio",
+                    "source": item.source,
+                    "createdAt": now(),
+                    "text": item.text,
+                    "metadata": item.metadata,
+                    "clip": clip
+                }));
                 status(
                     &app,
                     "speaking",
@@ -1542,8 +1613,24 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                     state.finished_playback_id = None;
                 }
             }
-            Ok(_) => {}
+            Ok(_) => {
+                append_bridge_broadcast(&json!({
+                    "type": "audio_skipped",
+                    "source": item.source,
+                    "createdAt": now(),
+                    "text": item.text,
+                    "metadata": item.metadata
+                }));
+            }
             Err(error) => {
+                append_bridge_broadcast(&json!({
+                    "type": "audio_error",
+                    "source": item.source,
+                    "createdAt": now(),
+                    "text": item.text,
+                    "metadata": item.metadata,
+                    "error": error
+                }));
                 shared
                     .lock()
                     .expect("reader state poisoned")
