@@ -23,7 +23,8 @@
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
-        "shadow": false
+        "shadow": false,
+        "additionalBrowserArgs": "--disable-gpu --disable-gpu-compositing --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection"
       }
     ]
   },
