@@ -807,6 +807,9 @@ function playNext() {
     if (audio !== player) {
       return;
     }
+    if (clip.playbackId) {
+      void bridge?.finishSpeech?.(clip.playbackId);
+    }
     audioPlaying = false;
     activeClip = null;
     resetWaveformData();

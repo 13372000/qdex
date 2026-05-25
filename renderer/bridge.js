@@ -14,6 +14,7 @@ function tauriBridge(tauri) {
     getState: () => invoke("get_state"),
     attachActive: () => invoke("attach_active"),
     close: () => invoke("close"),
+    finishSpeech: (playbackId) => invoke("finish_speech", { playbackId }),
     hideToTray: () => invoke("hide_to_tray"),
     minimize: () => invoke("minimize"),
     readText: (payload) => invoke("read_text", { payload }),

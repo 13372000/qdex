@@ -2,6 +2,7 @@
 
 use base64::{engine::general_purpose, Engine as _};
 use edge_tts_rust::{Boundary, EdgeTtsClient, SpeakOptions};
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
@@ -10,7 +11,7 @@ use std::{
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, SystemTime},
 };
 use tauri::{
@@ -24,8 +25,8 @@ use uuid::Uuid;
 
 const ACTIVE_SESSION_SCAN_MS: u64 = 5000;
 const SESSION_POLL_MS: u64 = 500;
-const MAX_QUEUE: usize = 4;
-const MAX_SPEECH_CHARS: usize = 7000;
+const MAX_QUEUE: usize = 3;
+const MAX_SPEECH_CHARS: usize = 1800;
 const WINDOW_WIDTH: f64 = 430.0;
 const WINDOW_HEIGHT: f64 = 132.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 520.0;
@@ -113,6 +114,8 @@ struct ReaderState {
     current_activity: Activity,
     speech_queue: VecDeque<SpeechItem>,
     speech_busy: bool,
+    current_playback_id: Option<String>,
+    finished_playback_id: Option<String>,
     cancel_version: u64,
     skipped: usize,
     attach_in_flight: bool,
@@ -142,6 +145,8 @@ impl ReaderState {
             current_activity: activity("starting", "Launching QDex", "Starting up", json!({})),
             speech_queue: VecDeque::new(),
             speech_busy: false,
+            current_playback_id: None,
+            finished_playback_id: None,
             cancel_version: 0,
             skipped: 0,
             attach_in_flight: false,
@@ -927,29 +932,146 @@ async fn read_added_lines(app: &AppHandle, shared: &SharedState) {
     }
 }
 
+static MARKDOWN_IMAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]+\)").expect("valid image regex"));
+static MARKDOWN_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\([^)]+\)").expect("valid link regex"));
+static DIRECTIVE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"::[A-Za-z0-9_-]+\{[^}]*\}").expect("valid directive regex"));
+static INLINE_CODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`[^`]+`").expect("valid inline code regex"));
+static URL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"https?://\S+").expect("valid url regex"));
+static WINDOWS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\b(?:[a-z]:\\|%[a-z0-9_]+%\\|~\\)[^\s<>"'`)}\]]+"#)
+        .expect("valid windows path regex")
+});
+static RELATIVE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:^|\s)(?:\.{1,2}[\\/]|[A-Za-z0-9_.-]+[\\/])[A-Za-z0-9_./\\ -]+(?::\d+)?"#)
+        .expect("valid relative path regex")
+});
+static FILENAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\b[A-Za-z0-9_.-]+\.(?:rs|js|ts|tsx|jsx|json|toml|md|html|css|yml|yaml|lock|txt|ps1|exe|png|ico|wav|mp3|log|jsonl)(?::\d+)?\b"#,
+    )
+    .expect("valid filename regex")
+});
+static HEX_HASH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[0-9a-f]{7,40}\b").expect("valid hash regex"));
+static MULTISPACE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
+
+fn looks_like_code_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if line.starts_with("    ") || line.starts_with('\t') {
+        return true;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let code_prefixes = [
+        "::",
+        "@@",
+        "diff --git",
+        "index ",
+        "--- ",
+        "+++ ",
+        "{",
+        "}",
+        "[",
+        "]",
+        "<",
+        "</",
+        "<!--",
+        "|",
+        "$ ",
+        "ps ",
+        "use ",
+        "let ",
+        "const ",
+        "fn ",
+        "pub ",
+        "impl ",
+        "struct ",
+        "enum ",
+        "match ",
+        "class ",
+        "function ",
+        "import ",
+        "export ",
+        "return ",
+        "async fn ",
+        "cargo ",
+        "git ",
+        "npm ",
+        "node ",
+        "powershell ",
+    ];
+    if code_prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+        return true;
+    }
+
+    if trimmed.ends_with('{')
+        || trimmed.ends_with("};")
+        || trimmed.ends_with(';')
+        || trimmed.contains("=>")
+    {
+        return true;
+    }
+
+    let symbols = trimmed
+        .chars()
+        .filter(|character| "{}[]();=<>".contains(*character))
+        .count();
+    symbols >= 4 && symbols * 5 > trimmed.chars().count()
+}
+
+fn sanitize_speech_line(line: &str) -> String {
+    let mut clean = MARKDOWN_IMAGE_RE.replace_all(line, " ").into_owned();
+    clean = MARKDOWN_LINK_RE.replace_all(&clean, "$1").into_owned();
+    clean = DIRECTIVE_RE.replace_all(&clean, " ").into_owned();
+    clean = INLINE_CODE_RE.replace_all(&clean, " ").into_owned();
+    clean = URL_RE.replace_all(&clean, " ").into_owned();
+    clean = WINDOWS_PATH_RE.replace_all(&clean, " ").into_owned();
+    clean = RELATIVE_PATH_RE.replace_all(&clean, " ").into_owned();
+    clean = FILENAME_RE.replace_all(&clean, " ").into_owned();
+    clean = HEX_HASH_RE.replace_all(&clean, " ").into_owned();
+
+    let trimmed = clean
+        .trim()
+        .trim_start_matches("- ")
+        .trim_start_matches("* ")
+        .trim();
+    MULTISPACE_RE.replace_all(trimmed, " ").trim().to_string()
+}
+
 fn clean_speech_text(text: &str) -> String {
-    let mut clean = String::new();
+    let mut parts = Vec::new();
     let mut in_code = false;
+
     for line in text.lines() {
-        if line.trim_start().starts_with("```") {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code = !in_code;
-            if !clean.ends_with(" Code block omitted. ") {
-                clean.push_str(" Code block omitted. ");
-            }
             continue;
         }
-        if !in_code {
-            clean.push_str(line);
-            clean.push(' ');
+        if in_code || looks_like_code_line(line) {
+            continue;
+        }
+
+        let line = sanitize_speech_line(line);
+        if !line.is_empty() {
+            parts.push(line);
         }
     }
-    clean
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(MAX_SPEECH_CHARS)
-        .collect()
+
+    let clean = MULTISPACE_RE
+        .replace_all(&parts.join(" "), " ")
+        .trim()
+        .to_string();
+    clean.chars().take(MAX_SPEECH_CHARS).collect()
 }
 
 fn estimate_speech_duration(text: &str, speed: f64) -> f64 {
@@ -1281,12 +1403,22 @@ fn queue_output(app: &AppHandle, shared: &SharedState, text: String, force: bool
     }
 }
 
-async fn wait_for_speech(shared: &SharedState, milliseconds: u64, token: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(milliseconds.min(90_000));
+async fn wait_for_speech(
+    shared: &SharedState,
+    playback_id: &str,
+    milliseconds: u64,
+    token: u64,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(milliseconds.min(60_000));
     while std::time::Instant::now() < deadline {
-        let cancelled = shared.lock().expect("reader state poisoned").cancel_version != token;
-        if cancelled {
-            return false;
+        {
+            let state = shared.lock().expect("reader state poisoned");
+            if state.cancel_version != token {
+                return false;
+            }
+            if state.finished_playback_id.as_deref() == Some(playback_id) {
+                return true;
+            }
         }
         sleep(Duration::from_millis(180)).await;
     }
@@ -1338,11 +1470,25 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
             synthesize_windows_text(&item.text, &settings, &voices).await
         };
         match synthesized {
-            Ok(clip) if !clip.is_null() => {
+            Ok(mut clip) if !clip.is_null() => {
                 let cancelled =
                     shared.lock().expect("reader state poisoned").cancel_version != token;
                 if cancelled {
                     continue;
+                }
+                let playback_id = Uuid::new_v4().to_string();
+                if let Some(object) = clip.as_object_mut() {
+                    object.insert("playbackId".into(), json!(playback_id));
+                }
+                let playback_id = clip
+                    .get("playbackId")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                {
+                    let mut state = shared.lock().expect("reader state poisoned");
+                    state.current_playback_id = Some(playback_id.clone());
+                    state.finished_playback_id = None;
                 }
                 emit_payload(&app, "reader:audio", clip.clone());
                 status(
@@ -1363,7 +1509,14 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                     .and_then(Value::as_f64)
                     .map(|seconds| (seconds * 1000.0).max(600.0) as u64)
                     .unwrap_or(1000);
-                let _ = wait_for_speech(&shared, duration_ms, token).await;
+                let _ = wait_for_speech(&shared, &playback_id, duration_ms, token).await;
+                let mut state = shared.lock().expect("reader state poisoned");
+                if state.current_playback_id.as_deref() == Some(&playback_id) {
+                    state.current_playback_id = None;
+                }
+                if state.finished_playback_id.as_deref() == Some(&playback_id) {
+                    state.finished_playback_id = None;
+                }
             }
             Ok(_) => {}
             Err(error) => {
@@ -1390,6 +1543,8 @@ fn cancel_current_speech(app: &AppHandle, shared: &SharedState, message: &str) {
         let mut state = shared.lock().expect("reader state poisoned");
         state.cancel_version += 1;
         state.speech_queue.clear();
+        state.current_playback_id = None;
+        state.finished_playback_id = None;
     }
     emit_payload(app, "reader:stop-audio", json!({}));
     status(app, "ready", message);
@@ -1455,6 +1610,17 @@ async fn read_text(
 }
 
 #[tauri::command]
+fn finish_speech(state: tauri::State<'_, SharedState>, playback_id: String) -> PublicState {
+    {
+        let mut reader = state.inner().lock().expect("reader state poisoned");
+        if reader.current_playback_id.as_deref() == Some(playback_id.as_str()) {
+            reader.finished_playback_id = Some(playback_id);
+        }
+    }
+    shared_public_state(state.inner())
+}
+
+#[tauri::command]
 fn skip_speech(app: AppHandle, state: tauri::State<'_, SharedState>) -> PublicState {
     cancel_current_speech(&app, state.inner(), "Skipped current read.");
     shared_public_state(state.inner())
@@ -1467,7 +1633,11 @@ fn minimize(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 fn hide_to_tray(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    status(&app, "ready", "QDex is hidden in the system tray and still listening.");
+    status(
+        &app,
+        "ready",
+        "QDex is hidden in the system tray and still listening.",
+    );
     window.hide().map_err(|error| error.to_string())
 }
 
@@ -1565,6 +1735,7 @@ pub fn run() {
             set_settings,
             test_voice,
             read_text,
+            finish_speech,
             skip_speech,
             minimize,
             hide_to_tray,
@@ -1581,6 +1752,37 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running QDex Tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn speech_cleaner_removes_paths_code_and_directives() {
+        let text = r#"Done in `renderer/renderer.js`.
+C:\Users\name\Documents\TTS\codex-output-reader\src-tauri\src\main.rs:12
+```rust
+const value = "do not read this";
+```
+::git-push{cwd="C:\repo" branch="main"}
+Here is the user-facing summary."#;
+
+        let clean = clean_speech_text(text);
+
+        assert!(clean.contains("Done in"));
+        assert!(clean.contains("Here is the user-facing summary."));
+        assert!(!clean.contains("renderer"));
+        assert!(!clean.contains("Users"));
+        assert!(!clean.contains("const value"));
+        assert!(!clean.contains("git-push"));
+    }
+
+    #[test]
+    fn speech_cleaner_keeps_normal_sentences() {
+        let text = "QDex reads new Codex responses aloud and stays quiet in the tray.";
+        assert_eq!(clean_speech_text(text), text);
+    }
 }
 
 fn main() {

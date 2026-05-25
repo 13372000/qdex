@@ -16,6 +16,7 @@ This notice summarizes third-party components declared in the current lockfiles 
 | --- | --- | --- | --- |
 | base64 | runtime dependency | 0.22.1 | MIT OR Apache-2.0 |
 | edge-tts-rust | runtime dependency | 0.1.3 | MIT |
+| regex | runtime dependency | 1.12.3 | MIT OR Apache-2.0 |
 | serde | runtime dependency | 1.0.228 | MIT OR Apache-2.0 |
 | serde_json | runtime dependency | 1.0.150 | MIT OR Apache-2.0 |
 | tauri | runtime dependency | 2.11.2 | Apache-2.0 OR MIT |
@@ -372,4 +373,3 @@ This notice summarizes third-party components declared in the current lockfiles 
 | zerovec-derive | 0.11.3 | Unicode-3.0 |
 | zerovec | 0.11.6 | Unicode-3.0 |
 | zmij | 1.0.21 | MIT |
-
