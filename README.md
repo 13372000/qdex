@@ -20,6 +20,10 @@ It watches local Codex session logs, follows the active session, and speaks only
 - Hides to the Windows system tray while continuing to listen
 - Runs as a compact transparent always-on-top Tauri overlay
 
+<p align="center">
+  <img src="assets/qdex-overlay-controls.png" alt="Annotated QDex overlay controls">
+</p>
+
 ## Install
 
 Packaged Windows builds run directly and do not require Node.js or Rust.
