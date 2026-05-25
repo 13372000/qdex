@@ -4,7 +4,7 @@
   "private": false,
   "license": "GPL-3.0-only",
   "author": "QDex contributors",
-  "description": "Standalone Edge/Supertonic reader and usage overlay for new visible Codex output.",
+  "description": "Lightweight Windows overlay that reads new visible Codex responses aloud.",
   "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
