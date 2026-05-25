@@ -1458,14 +1458,13 @@ fn skip_speech(app: AppHandle, state: tauri::State<'_, SharedState>) -> PublicSt
 
 #[tauri::command]
 fn minimize(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    status(&app, "ready", "QDex is hidden and still listening.");
-    window.hide().map_err(|error| error.to_string())
+    status(&app, "ready", "QDex is minimized and still listening.");
+    window.minimize().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 fn hide_to_tray(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    status(&app, "ready", "QDex is hidden and still listening.");
-    window.hide().map_err(|error| error.to_string())
+    minimize(app, window)
 }
 
 #[tauri::command]
