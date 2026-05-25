@@ -52,6 +52,8 @@ const MAX_AUDIO_QUEUE = 8;
 const WAVEFORM_SAMPLE_RATE = 1000;
 const VISUALIZER_DB_FLOOR = -48;
 const VISUALIZER_DB_CEIL = -6;
+const WAVEFORM_IDLE_FRAME_MS = 220;
+const WAVEFORM_HIDDEN_FRAME_MS = 1000;
 const SPEED_STEP = 0.05;
 const IDLE_MESSAGES = [
   "Waiting for work.",
@@ -98,6 +100,8 @@ const wave = {
   frame: [],
   level: 0,
   loading: false,
+  nextFrame: null,
+  nextTimer: null,
   player: null
 };
 
@@ -503,7 +507,50 @@ async function loadWaveformData(clip, player) {
   }
 }
 
+function clearWaveformSchedule() {
+  if (wave.nextFrame !== null) {
+    cancelAnimationFrame(wave.nextFrame);
+    wave.nextFrame = null;
+  }
+  if (wave.nextTimer !== null) {
+    clearTimeout(wave.nextTimer);
+    wave.nextTimer = null;
+  }
+}
+
+function requestWaveformFrame() {
+  wave.nextFrame = requestAnimationFrame(() => {
+    wave.nextFrame = null;
+    drawWaveform();
+  });
+}
+
+function scheduleWaveform(active) {
+  const delay = document.hidden
+    ? WAVEFORM_HIDDEN_FRAME_MS
+    : active
+      ? 0
+      : WAVEFORM_IDLE_FRAME_MS;
+
+  if (delay <= 0) {
+    requestWaveformFrame();
+    return;
+  }
+
+  wave.nextTimer = window.setTimeout(() => {
+    wave.nextTimer = null;
+    requestWaveformFrame();
+  }, delay);
+}
+
 function drawWaveform() {
+  if (document.hidden) {
+    wave.level *= 0.5;
+    document.body.dataset.voiceActive = "false";
+    scheduleWaveform(false);
+    return;
+  }
+
   const canvas = nodes.waveform;
   const bounds = canvas.getBoundingClientRect();
   const width = Math.max(1, Math.floor(bounds.width * window.devicePixelRatio));
@@ -535,7 +582,7 @@ function drawWaveform() {
   }
   drawVisualizerBars(ctx, bounds, intensity, active);
 
-  requestAnimationFrame(drawWaveform);
+  scheduleWaveform(active || audioPlaying || wave.loading || intensity > 0.018);
 }
 
 function showState(nextState) {
@@ -888,6 +935,12 @@ nodes.windowsMode.addEventListener("change", () => {
   setSettings();
 });
 nodes.windowsVoice.addEventListener("change", setSettings);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    clearWaveformSchedule();
+    scheduleWaveform(true);
+  }
+});
 nodes.faster.addEventListener("click", () => void adjustSpeed(SPEED_STEP));
 nodes.minimize.addEventListener("click", () => bridge?.hideToTray?.());
 nodes.playPause.addEventListener("click", playOrPause);
@@ -909,7 +962,7 @@ setInterval(() => {
     showIdleMessage();
   }
 }, 30000);
-requestAnimationFrame(drawWaveform);
+scheduleWaveform(false);
 
 if (bridge) {
   bridge.onActivity(showActivity);

@@ -22,8 +22,8 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
 
-const ACTIVE_SESSION_SCAN_MS: u64 = 2000;
-const SESSION_POLL_MS: u64 = 250;
+const ACTIVE_SESSION_SCAN_MS: u64 = 5000;
+const SESSION_POLL_MS: u64 = 500;
 const MAX_QUEUE: usize = 4;
 const MAX_SPEECH_CHARS: usize = 7000;
 const WINDOW_WIDTH: f64 = 430.0;
