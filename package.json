@@ -11,7 +11,7 @@
     "start": "electron .",
     "dev": "electron . --devtools",
     "fetch:assets": "node scripts/fetch-assets.mjs",
-    "package:win": "electron-builder --win dir"
+    "package:win": "electron-builder --win dir && node scripts/apply-win-icon.mjs"
   },
   "dependencies": {
     "@andresaya/edge-tts": "^1.8.0",
@@ -19,7 +19,8 @@
   },
   "devDependencies": {
     "electron": "^42.2.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "^26.0.12",
+    "rcedit": "^5.0.2"
   },
   "build": {
     "appId": "local.qdex",
