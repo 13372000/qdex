@@ -50,6 +50,8 @@ let usageState = null;
 const audioQueue = [];
 const MAX_AUDIO_QUEUE = 8;
 const WAVEFORM_SAMPLE_RATE = 1000;
+const VISUALIZER_DB_FLOOR = -48;
+const VISUALIZER_DB_CEIL = -6;
 const SPEED_STEP = 0.05;
 const IDLE_MESSAGES = [
   "Waiting for work.",
@@ -119,6 +121,30 @@ function option(value, label = value) {
 
 function clampNumber(value, minimum, maximum) {
   return Math.min(maximum, Math.max(minimum, Number(value)));
+}
+
+function amplitudeToLevel(rms, peak = rms) {
+  const amplitude = clampNumber((rms * 0.88) + (peak * 0.12), 0.000001, 1);
+  const db = 20 * Math.log10(amplitude);
+  return clampNumber((db - VISUALIZER_DB_FLOOR) / (VISUALIZER_DB_CEIL - VISUALIZER_DB_FLOOR), 0, 1);
+}
+
+function sampleEnergy(data, start, end, stride = 1) {
+  const first = Math.max(0, Math.floor(start));
+  const last = Math.min(data.length, Math.max(first + 1, Math.ceil(end)));
+  const step = Math.max(1, Math.floor(stride));
+  let sum = 0;
+  let peak = 0;
+  let count = 0;
+
+  for (let index = first; index < last; index += step) {
+    const sample = data[index] || 0;
+    sum += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+    count += 1;
+  }
+
+  return amplitudeToLevel(Math.sqrt(sum / Math.max(1, count)), peak);
 }
 
 function readSavedSettings() {
@@ -307,30 +333,17 @@ function showActivity(activity) {
 
 function waveIntensity() {
   if (!audioPlaying || !audio || wave.player !== audio || !wave.decoded) {
-    wave.level *= 0.72;
+    wave.level *= 0.66;
     return wave.level;
   }
 
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const windowSize = Math.max(32, Math.floor(sampleRate * 0.032));
-  const start = clampNumber(centerIndex - Math.floor(windowSize / 2), 0, Math.max(0, data.length - 1));
-  const end = clampNumber(start + windowSize, start + 1, data.length);
-  let sum = 0;
-  let peak = 0;
-  let count = 0;
-
-  for (let index = start; index < end; index += 4) {
-    const sample = data[index] || 0;
-    sum += sample * sample;
-    peak = Math.max(peak, Math.abs(sample));
-    count += 1;
-  }
-
-  const rms = Math.sqrt(sum / Math.max(1, count));
-  const raw = clampNumber((rms * 8.2) + (peak * 0.55), 0, 1);
-  const smoothing = raw > wave.level ? 0.62 : 0.24;
-  wave.level += (raw - wave.level) * smoothing;
+  const windowSize = Math.max(48, Math.floor(sampleRate * 0.052));
+  const raw = sampleEnergy(data, centerIndex - windowSize / 2, centerIndex + windowSize / 2, 2);
+  const gated = raw < 0.045 ? raw * 0.35 : raw;
+  const smoothing = gated > wave.level ? 0.34 : 0.14;
+  wave.level += (gated - wave.level) * smoothing;
   return wave.level;
 }
 
@@ -351,31 +364,24 @@ function rebuildWaveFrame(width, intensity) {
   const columns = Math.max(24, Math.ceil(width / 7));
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const windowSize = Math.max(32, Math.floor(sampleRate * 0.045));
-  const start = clampNumber(centerIndex - Math.floor(windowSize / 2), 0, Math.max(0, data.length - 1));
-  const end = clampNumber(start + windowSize, start + 1, data.length);
-  let sum = 0;
-  let peak = 0;
-  let count = 0;
-
-  for (let index = start; index < end; index += 1) {
-    const sample = data[index] || 0;
-    sum += sample * sample;
-    peak = Math.max(peak, Math.abs(sample));
-    count += 1;
-  }
-
-  const rms = Math.sqrt(sum / Math.max(1, count));
-  const energy = clampNumber((rms * 5.6) + (peak * 0.45) + intensity * 0.42, 0, 1);
+  const analysisWindow = Math.max(96, Math.floor(sampleRate * 0.18));
   const previous = wave.frame.length === columns ? wave.frame : new Array(columns).fill(0);
-  const nowSeconds = performance.now() / 1000;
   const nextFrame = [];
 
   for (let column = 0; column < columns; column += 1) {
-    const pulse = 0.88 + Math.sin(nowSeconds * (2.2 + (column % 5) * 0.13) + column * 0.74) * 0.12;
-    const target = clampNumber(energy * barShape(column, columns) * pulse, 0.018, 1);
+    const position = column / Math.max(1, columns - 1);
+    const centerLift = Math.sin(position * Math.PI);
+    const hash = Math.sin((column + 1) * 78.233) * 43758.5453;
+    const jitter = hash - Math.floor(hash);
+    const offset = (position - 0.5) * analysisWindow * 0.86 + (jitter - 0.5) * analysisWindow * 0.1;
+    const localCenter = centerIndex + Math.round(offset);
+    const localWindow = Math.max(12, Math.floor(sampleRate * (0.018 + centerLift * 0.014)));
+    const level = sampleEnergy(data, localCenter - localWindow / 2, localCenter + localWindow / 2);
+    const gated = level < 0.055 ? level * 0.42 : level;
+    const shaped = clampNumber((gated * (0.62 + barShape(column, columns) * 0.22)) + centerLift * intensity * 0.032, 0, 1);
+    const target = clampNumber(Math.pow(shaped, 1.36), 0.012, 0.88);
     const prior = previous[column] || 0;
-    const smoothing = target > prior ? 0.5 : 0.24;
+    const smoothing = target > prior ? 0.42 : 0.16;
     nextFrame.push(prior + (target - prior) * smoothing);
   }
 
@@ -427,19 +433,19 @@ function drawVisualizerBars(ctx, bounds, intensity, active) {
   const baseY = bounds.height - 5;
   const maxHeight = Math.max(4, bounds.height - 10);
 
-  ctx.shadowBlur = active ? 7 : 0;
+  ctx.shadowBlur = active ? 4 + intensity * 2 : 0;
   ctx.shadowColor = "rgba(238, 241, 242, 0.28)";
   for (let index = 0; index < barCount; index += 1) {
     const sample = Math.abs(frame[index] || 0);
     const idle = active ? 0 : 0.045 + Math.abs(frame[index] || 0);
     const energy = active
-      ? clampNumber(sample * (4.6 + intensity * 3.2) + intensity * 0.22, 0.035, 1)
+      ? clampNumber(sample, 0.025, 0.92)
       : clampNumber(idle, 0.03, 0.11);
-    const eased = active ? Math.pow(energy, 0.68) : energy;
-    const height = clampNumber(eased * maxHeight, active ? 3 : 2, maxHeight);
+    const eased = active ? Math.pow(energy, 1.08) : energy;
+    const height = clampNumber(eased * maxHeight, active ? 3 : 2, maxHeight * (active ? 0.9 : 1));
     const x = index * step + (step - barWidth) / 2;
     const y = baseY - height;
-    const alpha = active ? clampNumber(0.32 + eased * 0.58, 0.36, 0.9) : 0.22;
+    const alpha = active ? clampNumber(0.26 + eased * 0.54, 0.3, 0.82) : 0.22;
     ctx.fillStyle = `rgba(232, 238, 242, ${alpha})`;
     fillRoundedBar(ctx, x, y, barWidth, height, Math.min(2.5, barWidth / 2));
   }
