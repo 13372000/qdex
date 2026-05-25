@@ -147,6 +147,11 @@ function sampleEnergy(data, start, end, stride = 1) {
   return amplitudeToLevel(Math.sqrt(sum / Math.max(1, count)), peak);
 }
 
+function columnNoise(index, salt = 0) {
+  const hash = Math.sin((index + 1) * (12.9898 + salt * 19.19)) * 43758.5453;
+  return hash - Math.floor(hash);
+}
+
 function readSavedSettings() {
   try {
     return JSON.parse(localStorage.getItem("codex-output-reader.settings") || "{}");
@@ -350,8 +355,7 @@ function waveIntensity() {
 function barShape(index, count) {
   const position = index / Math.max(1, count - 1);
   const centerLift = Math.sin(position * Math.PI);
-  const hash = Math.sin((index + 1) * 12.9898) * 43758.5453;
-  const variation = hash - Math.floor(hash);
+  const variation = columnNoise(index);
   return clampNumber(0.34 + centerLift * 0.2 + variation * 0.46, 0.32, 1);
 }
 
@@ -364,22 +368,33 @@ function rebuildWaveFrame(width, intensity) {
   const columns = Math.max(24, Math.ceil(width / 7));
   const { data, sampleRate } = wave.decoded;
   const centerIndex = Math.floor(audio.currentTime * sampleRate);
-  const analysisWindow = Math.max(96, Math.floor(sampleRate * 0.18));
+  const baseWindow = Math.max(56, Math.floor(sampleRate * 0.074));
+  const transientWindow = Math.max(18, Math.floor(sampleRate * 0.024));
+  const bodyLevel = sampleEnergy(data, centerIndex - baseWindow / 2, centerIndex + baseWindow / 2);
+  const transientLevel = sampleEnergy(data, centerIndex - transientWindow / 2, centerIndex + transientWindow / 2);
+  const currentLevel = clampNumber(bodyLevel * 0.72 + transientLevel * 0.28, 0, 1);
   const previous = wave.frame.length === columns ? wave.frame : new Array(columns).fill(0);
+  const nowSeconds = performance.now() / 1000;
   const nextFrame = [];
 
   for (let column = 0; column < columns; column += 1) {
     const position = column / Math.max(1, columns - 1);
     const centerLift = Math.sin(position * Math.PI);
-    const hash = Math.sin((column + 1) * 78.233) * 43758.5453;
-    const jitter = hash - Math.floor(hash);
-    const offset = (position - 0.5) * analysisWindow * 0.86 + (jitter - 0.5) * analysisWindow * 0.1;
-    const localCenter = centerIndex + Math.round(offset);
-    const localWindow = Math.max(12, Math.floor(sampleRate * (0.018 + centerLift * 0.014)));
+    const jitter = (columnNoise(column, 2) - 0.5) * sampleRate * 0.022;
+    const localCenter = centerIndex + Math.round(jitter);
+    const localWindow = Math.max(14, Math.floor(sampleRate * (0.018 + columnNoise(column, 3) * 0.02)));
     const level = sampleEnergy(data, localCenter - localWindow / 2, localCenter + localWindow / 2);
-    const gated = level < 0.055 ? level * 0.42 : level;
-    const shaped = clampNumber((gated * (0.62 + barShape(column, columns) * 0.22)) + centerLift * intensity * 0.032, 0, 1);
-    const target = clampNumber(Math.pow(shaped, 1.36), 0.012, 0.88);
+    const wobbleRate = 0.95 + columnNoise(column, 4) * 1.55;
+    const wobblePhase = columnNoise(column, 5) * Math.PI * 2;
+    const wobble = 0.88 + Math.sin(nowSeconds * wobbleRate + wobblePhase) * (0.04 + intensity * 0.08);
+    const gated = level < 0.055 && currentLevel < 0.06 ? level * 0.36 : level;
+    const shaped = clampNumber(
+      (currentLevel * 0.42 + gated * 0.48) * (0.58 + barShape(column, columns) * 0.28) * wobble
+        + centerLift * intensity * 0.026,
+      0,
+      1
+    );
+    const target = clampNumber(Math.pow(shaped, 1.42), 0.012, 0.84);
     const prior = previous[column] || 0;
     const smoothing = target > prior ? 0.42 : 0.16;
     nextFrame.push(prior + (target - prior) * smoothing);
@@ -425,7 +440,9 @@ function drawVisualizerBars(ctx, bounds, intensity, active) {
     ? wave.frame
     : Array.from({ length: Math.max(24, Math.ceil(bounds.width / 7)) }, (_value, index) => {
         const nowSeconds = performance.now() / 1000;
-        return Math.sin(nowSeconds * 1.8 + index * 0.72) * 0.026;
+        const rate = 0.55 + columnNoise(index, 6) * 0.8;
+        const phase = columnNoise(index, 7) * Math.PI * 2;
+        return Math.sin(nowSeconds * rate + phase) * 0.018;
       });
   const barCount = frame.length;
   const step = bounds.width / Math.max(1, barCount);
