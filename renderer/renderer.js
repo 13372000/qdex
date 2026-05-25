@@ -2,7 +2,6 @@ const bridge = window.codexReader;
 const nodes = {
   contextCluster: document.querySelector("#context-cluster"),
   contextGauge: document.querySelector("#context-gauge"),
-  download: document.querySelector("#download"),
   edgePitch: document.querySelector("#edge-pitch"),
   edgePitchValue: document.querySelector("#edge-pitch-value"),
   edgeVoice: document.querySelector("#edge-voice"),
@@ -27,13 +26,10 @@ const nodes = {
   speed: document.querySelector("#speed"),
   speedValue: document.querySelector("#speed-value"),
   status: document.querySelector("#status"),
-  steps: document.querySelector("#steps"),
-  stepsValue: document.querySelector("#steps-value"),
   test: document.querySelector("#test"),
   usageCluster: document.querySelector("#usage-cluster"),
   usageGauge: document.querySelector("#usage-gauge"),
   usagePercent: document.querySelector("#usage-percent"),
-  voice: document.querySelector("#voice"),
   waveSeek: document.querySelector("#wave-seek"),
   waveform: document.querySelector("#waveform"),
   volume: document.querySelector("#volume"),
@@ -141,9 +137,7 @@ function currentSettings() {
     edgePitch: nodes.edgePitch.value,
     windowsVoiceMode: nodes.windowsMode.value || "auto",
     windowsVoice: nodes.windowsVoice.value || "",
-    voice: nodes.voice.value || "F1",
     speed: nodes.speed.value,
-    totalStep: nodes.steps.value,
     volume: nodes.volume.value
   };
 }
@@ -181,9 +175,7 @@ function syncEngineControls() {
 
   const supportedEngines = state?.supportedEngines || ["edge", "windows"];
   const canTest = supportedEngines.includes(engine);
-  const needsAssets = false;
   nodes.test.disabled = !canTest;
-  nodes.download.disabled = needsAssets ? Boolean(state?.assetsReady) : true;
 }
 
 function formatPercent(value) {
@@ -533,8 +525,6 @@ function showState(nextState) {
       return option(voice.id, details ? `${voice.label} - ${details}` : voice.label);
     })
   );
-  nodes.voice.replaceChildren(...(state.voices || []).map(option));
-
   const supportedEngines = state.supportedEngines || ["edge", "windows"];
   for (const engineOption of nodes.engine.options) {
     engineOption.disabled = !supportedEngines.includes(engineOption.value);
@@ -551,9 +541,7 @@ function showState(nextState) {
   nodes.edgePitch.value = saved.edgePitch ?? 0;
   nodes.windowsMode.value = saved.windowsVoiceMode || state.settings?.windowsVoiceMode || "auto";
   nodes.windowsVoice.value = saved.windowsVoice || state.settings?.windowsVoice || "";
-  nodes.voice.value = saved.voice || "F1";
   nodes.speed.value = saved.speed || 1.05;
-  nodes.steps.value = saved.totalStep || 4;
   nodes.volume.value = saved.volume ?? 0.85;
   syncEngineControls();
   syncRangeLabels();
@@ -626,7 +614,6 @@ function showStatus(nextStatus) {
 function syncRangeLabels() {
   nodes.speedValue.textContent = Number(nodes.speed.value).toFixed(2);
   nodes.edgePitchValue.textContent = `${Number(nodes.edgePitch.value) || 0}Hz`;
-  nodes.stepsValue.textContent = nodes.steps.value;
   nodes.volumeValue.textContent = Number(nodes.volume.value).toFixed(2);
 }
 
@@ -811,17 +798,6 @@ async function setSettings() {
   applyPlaybackRate();
 }
 
-async function downloadAssets() {
-  nodes.download.disabled = true;
-  try {
-    showState(await bridge.downloadAssets());
-    await setSettings();
-  } catch (error) {
-    showStatus({ state: "error", message: error.message });
-    nodes.download.disabled = false;
-  }
-}
-
 async function readAgain() {
   const textToRead = lastOutputText.trim();
   if (!textToRead || !bridge?.readText) {
@@ -874,7 +850,7 @@ nodes.speed.addEventListener("input", () => {
   applyPlaybackRate();
 });
 nodes.speed.addEventListener("change", setSettings);
-for (const slider of [nodes.steps, nodes.volume, nodes.edgePitch]) {
+for (const slider of [nodes.volume, nodes.edgePitch]) {
   slider.addEventListener("input", syncRangeLabels);
   slider.addEventListener("change", setSettings);
 }
@@ -889,8 +865,6 @@ nodes.windowsMode.addEventListener("change", () => {
   setSettings();
 });
 nodes.windowsVoice.addEventListener("change", setSettings);
-nodes.voice.addEventListener("change", setSettings);
-nodes.download.addEventListener("click", downloadAssets);
 nodes.faster.addEventListener("click", () => void adjustSpeed(SPEED_STEP));
 nodes.minimize.addEventListener("click", () => bridge?.minimize());
 nodes.playPause.addEventListener("click", playOrPause);
@@ -936,10 +910,7 @@ if (bridge) {
     .catch((error) => showStatus({ state: "error", message: error.message }));
 } else {
   showState({
-    assetsReady: false,
-    modelLoaded: false,
     edgeVoices: [{ id: "en-US-AvaMultilingualNeural", label: "Ava Multilingual", locale: "en-US" }],
-    voices: ["F1", "F2", "M1", "M2"],
     settings: {
       enabled: true,
       engine: "edge",
@@ -947,15 +918,12 @@ if (bridge) {
       edgePitch: 0,
       windowsVoiceMode: "auto",
       windowsVoice: "",
-      voice: "F1",
       speed: 1.05,
-      totalStep: 4,
       volume: 0.85
     },
     session: null,
-    activity: { state: "info", title: "Open Electron app", detail: "Bridge is not available" }
+    activity: { state: "info", title: "Open QDex app", detail: "Bridge is not available" }
   });
-  nodes.download.disabled = true;
   nodes.test.disabled = true;
-  showStatus({ state: "info", message: "Open the Electron app to listen to Codex output." });
+  showStatus({ state: "info", message: "Open QDex to listen to Codex output." });
 }

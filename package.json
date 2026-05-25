@@ -5,48 +5,16 @@
   "license": "GPL-3.0-only",
   "author": "QDex contributors",
   "description": "Lightweight Windows overlay that reads new visible Codex responses aloud.",
-  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
-    "start": "electron .",
-    "dev": "electron . --devtools",
-    "fetch:assets": "node scripts/fetch-assets.mjs",
-    "package:win": "electron-builder --win dir && node scripts/apply-win-icon.mjs",
+    "start": "tauri dev",
+    "dev": "tauri dev",
+    "build": "tauri build",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
   },
-  "dependencies": {
-    "@andresaya/edge-tts": "^1.8.0",
-    "@tauri-apps/api": "^2.11.0",
-    "onnxruntime-node": "^1.22.0"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2",
-    "electron": "^42.2.0",
-    "electron-builder": "^26.0.12",
-    "rcedit": "^5.0.2"
-  },
-  "build": {
-    "appId": "local.qdex",
-    "productName": "QDex",
-    "asar": false,
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "build/**/*",
-      "electron/**/*",
-      "renderer/**/*",
-      "supertonic/**/*",
-      "package.json",
-      "README.md"
-    ],
-    "win": {
-      "icon": "build/icon.ico",
-      "signAndEditExecutable": false,
-      "target": [
-        "dir"
-      ]
-    }
+    "@tauri-apps/cli": "^2.11.2"
   }
 }

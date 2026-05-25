@@ -45,9 +45,7 @@ struct Settings {
     edge_pitch: i32,
     windows_voice_mode: String,
     windows_voice: String,
-    voice: String,
     speed: f64,
-    total_step: i32,
     volume: f64,
 }
 
@@ -60,9 +58,7 @@ impl Default for Settings {
             edge_pitch: 0,
             windows_voice_mode: "auto".into(),
             windows_voice: String::new(),
-            voice: "F1".into(),
             speed: 1.05,
-            total_step: 4,
             volume: 0.85,
         }
     }
@@ -123,12 +119,8 @@ type SharedState = Arc<Mutex<ReaderState>>;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PublicState {
-    assets_ready: bool,
-    asset_root: String,
-    model_loaded: bool,
     edge_voices: Vec<VoiceInfo>,
     windows_voices: Vec<VoiceInfo>,
-    voices: Vec<String>,
     supported_engines: Vec<String>,
     settings: Settings,
     usage: Option<Value>,
@@ -205,15 +197,8 @@ fn public_session(session: &SessionState) -> PublicSession {
 
 fn public_state(state: &ReaderState) -> PublicState {
     PublicState {
-        assets_ready: false,
-        asset_root: String::new(),
-        model_loaded: false,
         edge_voices: edge_voices(),
         windows_voices: state.windows_voices.clone(),
-        voices: ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"]
-            .iter()
-            .map(|voice| (*voice).to_string())
-            .collect(),
         supported_engines: vec!["edge".into(), "windows".into()],
         settings: state.settings.clone(),
         usage: state.current_usage.clone(),
@@ -343,9 +328,7 @@ fn normalize_settings(input: &Value, previous: &Settings, voices: &[VoiceInfo]) 
         edge_pitch: value_i32(input, "edgePitch", previous.edge_pitch).clamp(-50, 50),
         windows_voice_mode,
         windows_voice,
-        voice: value_string(input, "voice", &previous.voice),
         speed: clamp(value_f64(input, "speed", previous.speed), 0.7, 1.5, 1.05),
-        total_step: value_i32(input, "totalStep", previous.total_step).clamp(2, 12),
         volume: clamp(value_f64(input, "volume", previous.volume), 0.0, 1.0, 0.85),
     }
 }
@@ -1422,11 +1405,6 @@ async fn attach_active(
 }
 
 #[tauri::command]
-fn download_assets() -> Result<(), String> {
-    Err("Local model downloads are not used in this Tauri build.".into())
-}
-
-#[tauri::command]
 async fn set_settings(
     app: AppHandle,
     state: tauri::State<'_, SharedState>,
@@ -1536,7 +1514,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             attach_active,
-            download_assets,
             set_settings,
             test_voice,
             read_text,

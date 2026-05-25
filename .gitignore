@@ -1,13 +1,9 @@
 node_modules/
-release/
-dist/
 coverage/
 src-tauri/gen/
 src-tauri/target/
 
-assets/onnx/
-assets/voice_styles/
-*.onnx
+dist/
 
 .env
 .env.*

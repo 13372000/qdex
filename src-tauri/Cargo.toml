@@ -1,7 +1,7 @@
 [package]
 name = "qdex"
 version = "0.1.0"
-description = "QDex Tauri prototype"
+description = "QDex Windows overlay"
 authors = ["QDex contributors"]
 license = "GPL-3.0-only"
 edition = "2021"

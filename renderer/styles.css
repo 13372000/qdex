@@ -777,14 +777,8 @@ body[data-voice-active="true"] .scanline {
   gap: 8px;
 }
 
-body[data-tts-engine="edge"] .supertonic-only,
 body[data-tts-engine="edge"] .windows-only,
-body[data-tts-engine="edge"] #download,
-body[data-tts-engine="windows"] .edge-only,
-body[data-tts-engine="windows"] .supertonic-only,
-body[data-tts-engine="windows"] #download,
-body[data-tts-engine="supertonic"] .edge-only,
-body[data-tts-engine="supertonic"] .windows-only {
+body[data-tts-engine="windows"] .edge-only {
   display: none;
 }
 

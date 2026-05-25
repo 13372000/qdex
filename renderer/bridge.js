@@ -13,7 +13,6 @@ function tauriBridge(tauri) {
   return {
     getState: () => invoke("get_state"),
     attachActive: () => invoke("attach_active"),
-    downloadAssets: () => invoke("download_assets"),
     close: () => invoke("close"),
     hideToTray: () => invoke("hide_to_tray"),
     minimize: () => invoke("minimize"),
