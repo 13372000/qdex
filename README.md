@@ -16,6 +16,7 @@ It watches local Codex session logs, follows the active session, and speaks only
 - Shows observable activity such as tool calls, commands, patches, replies, and usage updates
 - Displays local usage/reset status from Codex `token_count` events
 - Supports Edge Neural TTS and Windows Local TTS
+- Requires no API keys for supported speech engines
 - Runs as a compact transparent always-on-top Tauri overlay
 
 ## Requirements
@@ -50,7 +51,7 @@ QDEX_CODEX_SESSIONS_ROOT=C:\path\to\sessions
 
 ## TTS Engines
 
-QDex supports two speech engines:
+The current QDex release supports two speech engines:
 
 - Edge Neural TTS for online neural voices without an API key
 - Windows Local TTS for built-in offline SAPI voices
@@ -86,3 +87,5 @@ Build output is ignored by Git.
 ## License
 
 QDex is licensed under GPL-3.0-only. See [LICENSE](LICENSE).
+
+Third-party dependency notices are summarized in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
