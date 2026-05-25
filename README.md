@@ -84,6 +84,7 @@ Build output is ignored by Git.
 - Markdown code blocks are reduced before speech to avoid reading long blocks of punctuation.
 - Edge Neural TTS uses Microsoft Edge Read Aloud endpoints and does not require an API key.
 - The status line is limited to observable saved events and does not expose hidden model reasoning.
+- Planned follow-up work is tracked in [TODO.md](TODO.md).
 
 ## License
 
