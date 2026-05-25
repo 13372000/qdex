@@ -889,7 +889,7 @@ nodes.windowsMode.addEventListener("change", () => {
 });
 nodes.windowsVoice.addEventListener("change", setSettings);
 nodes.faster.addEventListener("click", () => void adjustSpeed(SPEED_STEP));
-nodes.minimize.addEventListener("click", () => bridge?.minimize());
+nodes.minimize.addEventListener("click", () => bridge?.hideToTray?.());
 nodes.playPause.addEventListener("click", playOrPause);
 nodes.readAgain.addEventListener("click", readAgain);
 nodes.skipRead.addEventListener("click", skipCurrentRead);

@@ -17,6 +17,7 @@ It watches local Codex session logs, follows the active session, and speaks only
 - Displays local usage/reset status from Codex `token_count` events
 - Supports Edge Neural TTS and Windows Local TTS
 - Requires no API keys for supported speech engines
+- Hides to the Windows system tray while continuing to listen
 - Runs as a compact transparent always-on-top Tauri overlay
 
 ## Requirements

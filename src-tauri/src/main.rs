@@ -13,7 +13,11 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime},
 };
-use tauri::{AppHandle, Emitter, LogicalSize, Manager, WebviewWindow};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    App, AppHandle, Emitter, LogicalSize, Manager, WebviewWindow,
+};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::{process::Command, time::sleep};
 use uuid::Uuid;
@@ -1458,13 +1462,13 @@ fn skip_speech(app: AppHandle, state: tauri::State<'_, SharedState>) -> PublicSt
 
 #[tauri::command]
 fn minimize(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    status(&app, "ready", "QDex is minimized and still listening.");
-    window.minimize().map_err(|error| error.to_string())
+    hide_to_tray(app, window)
 }
 
 #[tauri::command]
 fn hide_to_tray(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    minimize(app, window)
+    status(&app, "ready", "QDex is hidden in the system tray and still listening.");
+    window.hide().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1506,6 +1510,51 @@ fn start_background_tasks(app: AppHandle, shared: SharedState) {
     });
 }
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &mut App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show QDex", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit QDex", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("qdex")
+        .tooltip("QDex")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            if event.id() == "show" {
+                show_main_window(app);
+            } else if event.id() == "quit" {
+                app.exit(0);
+            }
+        })
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Down,
+                ..
+            }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => show_main_window(tray.app_handle()),
+            _ => {}
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+
+    tray.build(app)?;
+    Ok(())
+}
+
 pub fn run() {
     let shared: SharedState = Arc::new(Mutex::new(ReaderState::new()));
     tauri::Builder::default()
@@ -1523,6 +1572,7 @@ pub fn run() {
             set_settings_panel_open
         ])
         .setup(move |app| {
+            setup_tray(app)?;
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_always_on_top(true);
             }
