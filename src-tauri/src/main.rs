@@ -27,6 +27,8 @@ const ACTIVE_SESSION_SCAN_MS: u64 = 5000;
 const SESSION_POLL_MS: u64 = 500;
 const MAX_QUEUE: usize = 3;
 const MAX_SPEECH_CHARS: usize = 1800;
+const SPEECH_CHUNK_TARGET_CHARS: usize = 760;
+const SPEECH_CHUNK_MAX_CHARS: usize = 980;
 const WINDOW_WIDTH: f64 = 430.0;
 const WINDOW_HEIGHT: f64 = 132.0;
 const SETTINGS_WINDOW_WIDTH: f64 = 520.0;
@@ -979,6 +981,27 @@ async fn read_added_lines(app: &AppHandle, shared: &SharedState) {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SpeechLang {
+    Fr,
+    En,
+}
+
+fn speech_lang_from_code(code: &str) -> SpeechLang {
+    if code.eq_ignore_ascii_case("fr") {
+        SpeechLang::Fr
+    } else {
+        SpeechLang::En
+    }
+}
+
+fn lang_pair(lang: SpeechLang, fr: &'static str, en: &'static str) -> &'static str {
+    match lang {
+        SpeechLang::Fr => fr,
+        SpeechLang::En => en,
+    }
+}
+
 static MARKDOWN_IMAGE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]+\)").expect("valid image regex"));
 static MARKDOWN_LINK_RE: LazyLock<Regex> =
@@ -1000,25 +1023,716 @@ static MARKDOWN_UNDERSCORE_STRONG_RE: LazyLock<Regex> =
 static MARKDOWN_MARKER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"[*_]{1,3}").expect("valid marker regex"));
 static URL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"https?://\S+").expect("valid url regex"));
+    LazyLock::new(|| Regex::new(r#"https?://[^\s<>"'`)}\]]+"#).expect("valid url regex"));
+static LOCALHOST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\blocalhost(?::\d{2,5})?\b").expect("valid host regex"));
+static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
+        .expect("valid uuid regex")
+});
+static IP_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("valid ip regex"));
+static VERSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:v\d+\.\d+(?:\.\d+)?|\d+\.\d+\.\d+)(?:-[a-z0-9.-]+)?\b")
+        .expect("valid version regex")
+});
 static WINDOWS_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)\b(?:[a-z]:\\|%[a-z0-9_]+%\\|~\\)[^\s<>"'`)}\]]+"#)
         .expect("valid windows path regex")
 });
+static ABSOLUTE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(^|\s)(/[\w.@{}:-]+(?:/[\w.@{}:-]+)+(?:\.[a-z0-9]+)?(?::\d+)?)"#)
+        .expect("valid absolute path regex")
+});
 static RELATIVE_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(?:^|\s)(?:\.{1,2}[\\/]|[A-Za-z0-9_.-]+[\\/])[A-Za-z0-9_./\\ -]+(?::\d+)?"#)
-        .expect("valid relative path regex")
+    Regex::new(
+        r#"(?i)(^|\s)((?:\.{1,2}[\\/]|[A-Za-z0-9_.@-]+[\\/])[A-Za-z0-9_./\\ @{}:-]+(?::\d+)?)"#,
+    )
+    .expect("valid relative path regex")
 });
 static FILENAME_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)\b[A-Za-z0-9_.-]+\.(?:rs|js|ts|tsx|jsx|json|toml|md|html|css|yml|yaml|lock|txt|ps1|exe|png|ico|wav|mp3|log|jsonl)(?::\d+)?\b"#,
-    )
-    .expect("valid filename regex")
+    Regex::new(r##"(?i)(^|[\s\(\[\{"'])([a-z0-9_@-]+(?:\.[a-z0-9_-]+)+(?::\d+)?|\.[a-z0-9_-]+(?:\.[a-z0-9_-]+)*(?::\d+)?)"##)
+        .expect("valid filename regex")
 });
 static HEX_HASH_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[0-9a-f]{7,40}\b").expect("valid hash regex"));
+    LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{7,40}\b").expect("valid hash regex"));
+static TECH_WORD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(json|jsonl|yaml|yml|xml|html|css|js|jsx|ts|tsx|sql|csv|tsv|svg|api|cli|sdk|ide|orm|ast|dom|http|https|rest|graphql|crud|uuid|guid|jwt|oauth|cors|dns|tcp|udp|ip|ssh|ssl|tls|llm|gpt|rag|mcp|npm|pnpm|ci|cd|pr|mr|repo|postgresql|mysql|sqlite|mongodb|redis)\b",
+    )
+    .expect("valid technical word regex")
+});
+static ACRONYM_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[A-Z][A-Z0-9]{1,9}\b").expect("valid acronym regex"));
+static CAMEL_LOWER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([a-z0-9])([A-Z])").expect("valid camel regex"));
+static CAMEL_UPPER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([A-Z])([A-Z][a-z])").expect("valid camel regex"));
+static COMMAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(npm|pnpm|yarn|bun)\s+(install|run|start|build|dev|test|add|remove|update)\b",
+    )
+    .expect("valid command regex")
+});
+static GIT_COMMAND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bgit\s+(status|add|commit|push|pull|checkout|switch|merge|rebase|clone|diff|log|branch)\b")
+        .expect("valid git regex")
+});
+static FLAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(^|\s)(--?[A-Za-z][\w-]*)").expect("valid flag regex"));
+static CODE_SYMBOL_RULES: LazyLock<Vec<(Regex, &'static str, &'static str)>> =
+    LazyLock::new(|| {
+        vec![
+            (
+                Regex::new(r"!==").unwrap(),
+                " strictement different ",
+                " strictly not equal ",
+            ),
+            (
+                Regex::new(r"===").unwrap(),
+                " strictement egal ",
+                " strictly equals ",
+            ),
+            (Regex::new(r"=>").unwrap(), " fleche ", " arrow "),
+            (Regex::new(r"->").unwrap(), " fleche ", " arrow "),
+            (
+                Regex::new(r"\?\.").unwrap(),
+                " chainage optionnel ",
+                " optional chaining ",
+            ),
+            (
+                Regex::new(r"\?\?").unwrap(),
+                " coalescence nulle ",
+                " nullish coalescing ",
+            ),
+            (
+                Regex::new(r"\.\.\.").unwrap(),
+                " trois points ",
+                " dot dot dot ",
+            ),
+            (Regex::new(r"&&").unwrap(), " et logique ", " logical and "),
+            (Regex::new(r"\|\|").unwrap(), " ou logique ", " logical or "),
+            (Regex::new(r"==").unwrap(), " egal egal ", " double equals "),
+            (Regex::new(r"!=").unwrap(), " different ", " not equal "),
+            (
+                Regex::new(r"<=").unwrap(),
+                " inferieur ou egal ",
+                " less or equal ",
+            ),
+            (
+                Regex::new(r">=").unwrap(),
+                " superieur ou egal ",
+                " greater or equal ",
+            ),
+            (
+                Regex::new(r"::").unwrap(),
+                " double deux-points ",
+                " double colon ",
+            ),
+        ]
+    });
+static SINGLE_CODE_SYMBOL_RULES: LazyLock<Vec<(Regex, &'static str, &'static str)>> =
+    LazyLock::new(|| {
+        vec![
+            (
+                Regex::new(r"\(").unwrap(),
+                " parenthese ouvrante ",
+                " open parenthesis ",
+            ),
+            (
+                Regex::new(r"\)").unwrap(),
+                " parenthese fermante ",
+                " close parenthesis ",
+            ),
+            (
+                Regex::new(r"\[").unwrap(),
+                " crochet ouvrant ",
+                " open bracket ",
+            ),
+            (
+                Regex::new(r"\]").unwrap(),
+                " crochet fermant ",
+                " close bracket ",
+            ),
+            (
+                Regex::new(r"\{").unwrap(),
+                " accolade ouvrante ",
+                " open brace ",
+            ),
+            (
+                Regex::new(r"\}").unwrap(),
+                " accolade fermante ",
+                " close brace ",
+            ),
+            (Regex::new(r"<").unwrap(), " inferieur a ", " less than "),
+            (Regex::new(r">").unwrap(), " superieur a ", " greater than "),
+            (Regex::new(r";").unwrap(), " point-virgule ", " semicolon "),
+            (Regex::new(r":").unwrap(), " deux-points ", " colon "),
+            (Regex::new(r",").unwrap(), " virgule ", " comma "),
+            (Regex::new(r"\+").unwrap(), " plus ", " plus "),
+            (Regex::new(r"\*").unwrap(), " etoile ", " star "),
+            (Regex::new(r"\|").unwrap(), " pipe ", " pipe "),
+            (Regex::new(r"!").unwrap(), " non ", " not "),
+            (Regex::new(r"`").unwrap(), " backtick ", " backtick "),
+        ]
+    });
 static MULTISPACE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace regex"));
+
+fn spell_token(token: &str) -> String {
+    token
+        .chars()
+        .map(|character| character.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn split_camel_case(value: &str) -> String {
+    let clean = CAMEL_LOWER_RE.replace_all(value, "$1 $2").into_owned();
+    CAMEL_UPPER_RE.replace_all(&clean, "$1 $2").into_owned()
+}
+
+fn split_line_suffix(token: &str) -> (&str, Option<&str>) {
+    if let Some((head, tail)) = token.rsplit_once(':') {
+        if !head.is_empty() && tail.chars().all(|character| character.is_ascii_digit()) {
+            return (head, Some(tail));
+        }
+    }
+    (token, None)
+}
+
+fn regex_matches_full(regex: &Regex, token: &str) -> bool {
+    regex
+        .find(token)
+        .is_some_and(|match_| match_.start() == 0 && match_.end() == token.len())
+}
+
+fn is_hex_hash_token(token: &str) -> bool {
+    (7..=40).contains(&token.len())
+        && token.chars().all(|character| character.is_ascii_hexdigit())
+        && token
+            .chars()
+            .any(|character| matches!(character, 'a'..='f' | 'A'..='F'))
+}
+
+fn spoken_line_suffix(line: Option<&str>, lang: SpeechLang) -> String {
+    line.map(|line| format!(" {} {}", lang_pair(lang, "ligne", "line"), line))
+        .unwrap_or_default()
+}
+
+fn env_suffix_word(value: &str, lang: SpeechLang) -> String {
+    match (lang, value.to_ascii_lowercase().as_str()) {
+        (SpeechLang::Fr, "example") => "exemple".into(),
+        (SpeechLang::Fr, "development") => "developpement".into(),
+        (SpeechLang::Fr, "staging") => "preproduction".into(),
+        (_, "prod") => "production".into(),
+        (_, "dev") => "development".into(),
+        _ => normalize_identifier_segment(value, lang),
+    }
+}
+
+fn spoken_environment_file(token: &str, lang: SpeechLang) -> Option<String> {
+    let (core, line) = split_line_suffix(token);
+    let lower = core.to_ascii_lowercase();
+    if lower != ".env" && !lower.starts_with(".env.") {
+        return None;
+    }
+
+    let suffix = core
+        .strip_prefix(".env.")
+        .map(|suffix| {
+            suffix
+                .split('.')
+                .filter(|part| !part.is_empty())
+                .map(|part| env_suffix_word(part, lang))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let base = match (lang, suffix.is_empty()) {
+        (SpeechLang::Fr, true) => "fichier d'environnement".to_string(),
+        (SpeechLang::Fr, false) => {
+            format!("fichier d'environnement {}", suffix.join(" "))
+        }
+        (SpeechLang::En, true) => "environment file".to_string(),
+        (SpeechLang::En, false) => format!("{} environment file", suffix.join(" ")),
+    };
+
+    Some(format!("{base}{}", spoken_line_suffix(line, lang)))
+}
+
+fn spoken_known_word(word: &str, lang: SpeechLang) -> Option<&'static str> {
+    match word.to_ascii_uppercase().as_str() {
+        "JSON" => Some(lang_pair(lang, "jison", "jason")),
+        "JSONL" => Some(lang_pair(lang, "jison L", "jason L")),
+        "YAML" | "YML" => Some("yamel"),
+        "XML" => Some("X M L"),
+        "HTML" => Some("H T M L"),
+        "CSS" => Some("C S S"),
+        "JS" => Some("JavaScript"),
+        "JSX" => Some("J S X"),
+        "TS" => Some("TypeScript"),
+        "TSX" => Some("T S X"),
+        "SQL" => Some(lang_pair(lang, "S Q L", "sequel")),
+        "CSV" => Some("C S V"),
+        "TSV" => Some("T S V"),
+        "SVG" => Some("S V G"),
+        "API" => Some("A P I"),
+        "CLI" => Some("C L I"),
+        "SDK" => Some("S D K"),
+        "IDE" => Some("I D E"),
+        "ORM" => Some("O R M"),
+        "AST" => Some("A S T"),
+        "DOM" => Some("D O M"),
+        "HTTP" => Some("H T T P"),
+        "HTTPS" => Some("H T T P S"),
+        "REST" => Some(lang_pair(lang, "reste", "rest")),
+        "GRAPHQL" => Some("Graph Q L"),
+        "CRUD" => Some(lang_pair(lang, "crude", "crud")),
+        "UUID" => Some("U U I D"),
+        "GUID" => Some("G U I D"),
+        "JWT" => Some("J W T"),
+        "OAUTH" => Some("O Auth"),
+        "CORS" => Some("CORS"),
+        "DNS" => Some("D N S"),
+        "TCP" => Some("T C P"),
+        "UDP" => Some("U D P"),
+        "IP" => Some("I P"),
+        "SSH" => Some("S S H"),
+        "SSL" => Some("S S L"),
+        "TLS" => Some("T L S"),
+        "LLM" => Some("L L M"),
+        "GPT" => Some("G P T"),
+        "RAG" => Some("R A G"),
+        "MCP" => Some("M C P"),
+        "NPM" => Some("N P M"),
+        "PNPM" => Some("P N P M"),
+        "CI" => Some("C I"),
+        "CD" => Some("C D"),
+        "PR" => Some("pull request"),
+        "MR" => Some("merge request"),
+        "REPO" => Some(lang_pair(lang, "depot", "repo")),
+        "POSTGRESQL" => Some("postgres Q L"),
+        "MYSQL" => Some("My S Q L"),
+        "SQLITE" => Some("S Q Lite"),
+        "MONGODB" => Some("Mongo D B"),
+        "REDIS" => Some("Redis"),
+        _ => None,
+    }
+}
+
+fn spoken_extension(extension: &str, lang: SpeechLang) -> Option<String> {
+    let dot = lang_pair(lang, "point", "dot");
+    let spoken = match extension.to_ascii_lowercase().as_str() {
+        "json" => lang_pair(lang, "point jison", "dot jason"),
+        "jsonl" => lang_pair(lang, "point jison L", "dot jason L"),
+        "js" => lang_pair(lang, "point JavaScript", "dot JavaScript"),
+        "mjs" => lang_pair(lang, "point module JavaScript", "dot module JavaScript"),
+        "cjs" => lang_pair(lang, "point Common J S", "dot Common J S"),
+        "jsx" => lang_pair(lang, "point J S X", "dot J S X"),
+        "ts" => lang_pair(lang, "point TypeScript", "dot TypeScript"),
+        "tsx" => lang_pair(lang, "point T S X", "dot T S X"),
+        "html" | "htm" => lang_pair(lang, "point H T M L", "dot H T M L"),
+        "css" => lang_pair(lang, "point C S S", "dot C S S"),
+        "scss" => lang_pair(lang, "point S C S S", "dot S C S S"),
+        "sass" => lang_pair(lang, "point Sass", "dot Sass"),
+        "less" => lang_pair(lang, "point Less", "dot Less"),
+        "vue" => lang_pair(lang, "point Vue", "dot Vue"),
+        "svelte" => lang_pair(lang, "point Svelte", "dot Svelte"),
+        "py" => lang_pair(lang, "point Python", "dot Python"),
+        "pyc" => lang_pair(lang, "point P Y C", "dot P Y C"),
+        "cpp" => lang_pair(lang, "point C plus plus", "dot C plus plus"),
+        "cc" => lang_pair(lang, "point C C", "dot C C"),
+        "cxx" => lang_pair(lang, "point C X X", "dot C X X"),
+        "c" => lang_pair(lang, "point C", "dot C"),
+        "h" => lang_pair(lang, "point header", "dot H"),
+        "hpp" => lang_pair(lang, "point H P P", "dot H P P"),
+        "cs" => lang_pair(lang, "point C sharp", "dot C sharp"),
+        "java" => lang_pair(lang, "point Java", "dot Java"),
+        "kt" => lang_pair(lang, "point Kotlin", "dot Kotlin"),
+        "kts" => lang_pair(lang, "point Kotlin script", "dot Kotlin script"),
+        "go" => lang_pair(lang, "point Go", "dot Go"),
+        "rs" => lang_pair(lang, "point Rust", "dot Rust"),
+        "php" => lang_pair(lang, "point P H P", "dot P H P"),
+        "rb" => lang_pair(lang, "point Ruby", "dot Ruby"),
+        "swift" => lang_pair(lang, "point Swift", "dot Swift"),
+        "dart" => lang_pair(lang, "point Dart", "dot Dart"),
+        "sql" => lang_pair(lang, "point S Q L", "dot sequel"),
+        "db" => lang_pair(lang, "point database", "dot D B"),
+        "sqlite" => lang_pair(lang, "point SQLite", "dot SQLite"),
+        "xml" => lang_pair(lang, "point X M L", "dot X M L"),
+        "yaml" | "yml" => lang_pair(lang, "point yamel", "dot yamel"),
+        "toml" => lang_pair(lang, "point tomel", "dot tomel"),
+        "ini" => lang_pair(lang, "point I N I", "dot I N I"),
+        "env" => lang_pair(lang, "point env", "dot env"),
+        "md" => lang_pair(lang, "point Markdown", "dot Markdown"),
+        "mdx" => lang_pair(lang, "point M D X", "dot M D X"),
+        "txt" => lang_pair(lang, "point texte", "dot text"),
+        "log" => lang_pair(lang, "point log", "dot log"),
+        "lock" => lang_pair(lang, "point lock", "dot lock"),
+        "sh" => lang_pair(lang, "point shell", "dot shell"),
+        "bash" => lang_pair(lang, "point bash", "dot bash"),
+        "zsh" => lang_pair(lang, "point Z shell", "dot Z shell"),
+        "ps1" => lang_pair(lang, "point PowerShell", "dot PowerShell"),
+        "bat" => lang_pair(lang, "point batch", "dot batch"),
+        "cmd" => lang_pair(lang, "point commande", "dot command"),
+        "dockerfile" => lang_pair(lang, "point Dockerfile", "dot Dockerfile"),
+        "gitignore" => lang_pair(lang, "point git ignore", "dot git ignore"),
+        "npmrc" => lang_pair(lang, "point N P M R C", "dot N P M R C"),
+        "prettierrc" => lang_pair(lang, "point prettier R C", "dot prettier R C"),
+        "eslintrc" => lang_pair(lang, "point E S lint R C", "dot E S lint R C"),
+        "svg" => lang_pair(lang, "point S V G", "dot S V G"),
+        "png" => lang_pair(lang, "point P N G", "dot P N G"),
+        "jpg" => lang_pair(lang, "point J P G", "dot J P G"),
+        "jpeg" => lang_pair(lang, "point J PEG", "dot J peg"),
+        "webp" => lang_pair(lang, "point Web P", "dot Web P"),
+        "gif" => lang_pair(lang, "point gif", "dot gif"),
+        "ico" => lang_pair(lang, "point icone", "dot icon"),
+        "pdf" => lang_pair(lang, "point P D F", "dot P D F"),
+        "zip" => lang_pair(lang, "point zip", "dot zip"),
+        "tar" => lang_pair(lang, "point tar", "dot tar"),
+        "gz" => lang_pair(lang, "point G Z", "dot G Z"),
+        "rar" => lang_pair(lang, "point rar", "dot rar"),
+        "7z" => lang_pair(lang, "point sept zip", "dot seven zip"),
+        _ if !extension.is_empty() => return Some(format!("{dot} {}", spell_token(extension))),
+        _ => return None,
+    };
+    Some(spoken.to_string())
+}
+
+fn normalize_identifier_segment(value: &str, lang: SpeechLang) -> String {
+    let trimmed = value
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(rest) = trimmed.strip_prefix(':') {
+        return format!(
+            "{} {}",
+            lang_pair(lang, "parametre", "parameter"),
+            normalize_identifier_segment(rest, lang)
+        );
+    }
+    if trimmed.starts_with('{') && trimmed.ends_with('}') && trimmed.len() > 2 {
+        return format!(
+            "{} {}",
+            lang_pair(lang, "parametre", "parameter"),
+            normalize_identifier_segment(&trimmed[1..trimmed.len() - 1], lang)
+        );
+    }
+    if let Some(word) = spoken_known_word(trimmed, lang) {
+        return word.to_string();
+    }
+
+    let mut clean = split_camel_case(trimmed);
+    clean = clean
+        .replace('@', lang_pair(lang, " arobase ", " at "))
+        .replace('#', lang_pair(lang, " diese ", " hash "))
+        .replace('$', lang_pair(lang, " dollar ", " dollar "))
+        .replace('_', " underscore ")
+        .replace('-', lang_pair(lang, " tiret ", " dash "));
+    clean = ACRONYM_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            spoken_known_word(token, lang)
+                .map(str::to_string)
+                .unwrap_or_else(|| spell_token(token))
+        })
+        .into_owned();
+    clean = TECH_WORD_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            spoken_known_word(token, lang).unwrap_or(token).to_string()
+        })
+        .into_owned();
+    MULTISPACE_RE.replace_all(&clean, " ").trim().to_string()
+}
+
+fn normalize_filename_token(token: &str, lang: SpeechLang) -> String {
+    if let Some(spoken) = spoken_environment_file(token, lang) {
+        return spoken;
+    }
+
+    let (core, line) = split_line_suffix(token);
+    if let Some((stem, extension)) = core.rsplit_once('.') {
+        let stem = stem.trim_start_matches('.');
+        let mut parts = Vec::new();
+        if !stem.is_empty() {
+            parts.push(normalize_identifier_segment(stem, lang));
+        }
+        if let Some(extension) = spoken_extension(extension, lang) {
+            parts.push(extension);
+        }
+        return format!(
+            "{}{}",
+            MULTISPACE_RE.replace_all(&parts.join(" "), " ").trim(),
+            spoken_line_suffix(line, lang)
+        );
+    }
+
+    format!(
+        "{}{}",
+        normalize_identifier_segment(core, lang),
+        spoken_line_suffix(line, lang)
+    )
+}
+
+fn last_path_segment(value: &str) -> &str {
+    let trimmed = value.trim_end_matches(|character| character == '/' || character == '\\');
+    trimmed
+        .rsplit(|character| character == '/' || character == '\\')
+        .find(|segment| !segment.is_empty())
+        .unwrap_or(trimmed)
+}
+
+fn normalize_path_token(token: &str, lang: SpeechLang) -> String {
+    let (core, line) = split_line_suffix(token);
+    let segment = last_path_segment(core);
+    let normalized = if segment.contains('.') {
+        normalize_filename_token(segment, lang)
+    } else {
+        normalize_technical_token(segment, lang)
+    };
+
+    format!(
+        "{}{}",
+        MULTISPACE_RE.replace_all(&normalized, " ").trim(),
+        spoken_line_suffix(line, lang)
+    )
+}
+
+fn normalize_url_token(token: &str, lang: SpeechLang) -> String {
+    let mut clean = token
+        .trim_end_matches(|character| matches!(character, '.' | ',' | ';' | ')' | ']'))
+        .to_string();
+    clean = clean
+        .replace("https://", "H T T P S : / / ")
+        .replace("http://", "H T T P : / / ")
+        .replace("HTTPS://", "H T T P S : / / ")
+        .replace("HTTP://", "H T T P : / / ");
+    clean = clean
+        .replace("%20", lang_pair(lang, " espace encode ", " encoded space "))
+        .replace(
+            "www.",
+            &format!("W W W {} ", lang_pair(lang, "point", "dot")),
+        )
+        .replace('/', " slash ")
+        .replace('\\', lang_pair(lang, " antislash ", " backslash "))
+        .replace('.', lang_pair(lang, " point ", " dot "))
+        .replace(':', lang_pair(lang, " deux-points ", " colon "))
+        .replace(
+            '?',
+            lang_pair(lang, " point d'interrogation ", " question mark "),
+        )
+        .replace('&', lang_pair(lang, " et commercial ", " ampersand "))
+        .replace('=', lang_pair(lang, " egal ", " equals "))
+        .replace('#', lang_pair(lang, " diese ", " hash "));
+    MULTISPACE_RE.replace_all(&clean, " ").trim().to_string()
+}
+
+fn normalize_version_token(token: &str, lang: SpeechLang) -> String {
+    let mut clean = token.to_string();
+    if clean.to_ascii_lowercase().starts_with('v') {
+        clean.replace_range(0..1, "version ");
+    } else {
+        clean.insert_str(0, "version ");
+    }
+    clean = clean
+        .replace('.', lang_pair(lang, " point ", " dot "))
+        .replace('-', lang_pair(lang, " tiret ", " dash "));
+    MULTISPACE_RE.replace_all(&clean, " ").trim().to_string()
+}
+
+fn normalize_ip_token(token: &str, lang: SpeechLang) -> String {
+    token
+        .split('.')
+        .collect::<Vec<_>>()
+        .join(lang_pair(lang, " point ", " dot "))
+}
+
+fn normalize_hash_token(token: &str) -> String {
+    format!("hash {}", spell_token(token))
+}
+
+fn normalize_localhost_token(token: &str, lang: SpeechLang) -> String {
+    if let Some((host, port)) = token.split_once(':') {
+        format!("{} {} {}", host, lang_pair(lang, "port", "port"), port)
+    } else {
+        token.to_string()
+    }
+}
+
+fn normalize_technical_token(token: &str, lang: SpeechLang) -> String {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if regex_matches_full(&UUID_RE, trimmed) {
+        return lang_pair(lang, "identifiant U U I D", "U U I D identifier").to_string();
+    }
+    if is_hex_hash_token(trimmed) {
+        return normalize_hash_token(trimmed);
+    }
+    if regex_matches_full(&IP_RE, trimmed) {
+        return normalize_ip_token(trimmed, lang);
+    }
+    if regex_matches_full(&VERSION_RE, trimmed) {
+        return normalize_version_token(trimmed, lang);
+    }
+    if let Some(spoken) = spoken_environment_file(trimmed, lang) {
+        return spoken;
+    }
+    if trimmed.to_ascii_lowercase().starts_with("http://")
+        || trimmed.to_ascii_lowercase().starts_with("https://")
+    {
+        return normalize_url_token(trimmed, lang);
+    }
+    if regex_matches_full(&LOCALHOST_RE, trimmed) {
+        return normalize_localhost_token(trimmed, lang);
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return normalize_path_token(trimmed, lang);
+    }
+    if trimmed.contains('.') {
+        return normalize_filename_token(trimmed, lang);
+    }
+    normalize_identifier_segment(trimmed, lang)
+}
+
+fn normalize_code_symbols(
+    mut text: String,
+    lang: SpeechLang,
+    include_single_symbols: bool,
+) -> String {
+    for (regex, fr, en) in CODE_SYMBOL_RULES.iter() {
+        text = regex
+            .replace_all(&text, lang_pair(lang, fr, en))
+            .into_owned();
+    }
+    if include_single_symbols {
+        for (regex, fr, en) in SINGLE_CODE_SYMBOL_RULES.iter() {
+            text = regex
+                .replace_all(&text, lang_pair(lang, fr, en))
+                .into_owned();
+        }
+    }
+    text
+}
+
+fn normalize_speech_fragment(text: &str, lang: SpeechLang, include_single_symbols: bool) -> String {
+    let mut clean = text.to_string();
+
+    clean = URL_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            normalize_url_token(token, lang)
+        })
+        .into_owned();
+    clean = LOCALHOST_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            normalize_localhost_token(token, lang)
+        })
+        .into_owned();
+    clean = UUID_RE
+        .replace_all(
+            &clean,
+            lang_pair(lang, "identifiant U U I D", "U U I D identifier"),
+        )
+        .into_owned();
+    clean = IP_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            normalize_ip_token(token, lang)
+        })
+        .into_owned();
+    clean = VERSION_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            normalize_version_token(token, lang)
+        })
+        .into_owned();
+    clean = WINDOWS_PATH_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            normalize_path_token(token, lang)
+        })
+        .into_owned();
+    clean = ABSOLUTE_PATH_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let prefix = captures.get(1).map_or("", |match_| match_.as_str());
+            let token = captures.get(2).map_or("", |match_| match_.as_str());
+            format!("{prefix}{}", normalize_path_token(token, lang))
+        })
+        .into_owned();
+    clean = RELATIVE_PATH_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let prefix = captures.get(1).map_or("", |match_| match_.as_str());
+            let token = captures.get(2).map_or("", |match_| match_.as_str());
+            format!("{prefix}{}", normalize_path_token(token, lang))
+        })
+        .into_owned();
+    clean = FILENAME_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let prefix = captures.get(1).map_or("", |match_| match_.as_str());
+            let token = captures.get(2).map_or("", |match_| match_.as_str());
+            format!("{prefix}{}", normalize_filename_token(token, lang))
+        })
+        .into_owned();
+    clean = HEX_HASH_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            if is_hex_hash_token(token) {
+                normalize_hash_token(token)
+            } else {
+                token.to_string()
+            }
+        })
+        .into_owned();
+    clean = COMMAND_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let tool = captures.get(1).map_or("", |match_| match_.as_str());
+            let command = captures.get(2).map_or("", |match_| match_.as_str());
+            let spoken_tool = spoken_known_word(tool, lang)
+                .map(str::to_string)
+                .unwrap_or_else(|| spell_token(&tool.to_ascii_uppercase()));
+            format!("{spoken_tool} {command}")
+        })
+        .into_owned();
+    clean = GIT_COMMAND_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let command = captures.get(1).map_or("", |match_| match_.as_str());
+            format!("git {command}")
+        })
+        .into_owned();
+    clean = FLAG_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let prefix = captures.get(1).map_or("", |match_| match_.as_str());
+            let flag = captures.get(2).map_or("", |match_| match_.as_str());
+            let clean_flag = flag.trim_start_matches('-').replace('-', " ");
+            format!("{prefix}option {clean_flag}")
+        })
+        .into_owned();
+    clean = normalize_code_symbols(clean, lang, include_single_symbols);
+    clean = TECH_WORD_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            spoken_known_word(token, lang).unwrap_or(token).to_string()
+        })
+        .into_owned();
+    clean = ACRONYM_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            spoken_known_word(token, lang)
+                .map(str::to_string)
+                .unwrap_or_else(|| spell_token(token))
+        })
+        .into_owned();
+    MULTISPACE_RE.replace_all(&clean, " ").trim().to_string()
+}
 
 fn looks_like_code_line(line: &str) -> bool {
     let trimmed = line.trim();
@@ -1090,11 +1804,17 @@ fn looks_like_code_line(line: &str) -> bool {
     symbols >= 4 && symbols * 5 > trimmed.chars().count()
 }
 
-fn sanitize_speech_line(line: &str) -> String {
+fn sanitize_speech_line(line: &str, lang: SpeechLang) -> String {
     let mut clean = MARKDOWN_IMAGE_RE.replace_all(line, " ").into_owned();
     clean = MARKDOWN_LINK_RE.replace_all(&clean, "$1").into_owned();
     clean = DIRECTIVE_RE.replace_all(&clean, " ").into_owned();
-    clean = INLINE_CODE_RE.replace_all(&clean, " ").into_owned();
+    clean = INLINE_CODE_RE
+        .replace_all(&clean, |captures: &regex::Captures| {
+            let token = captures.get(0).map_or("", |match_| match_.as_str());
+            let inner = token.trim_matches('`');
+            normalize_speech_fragment(inner, lang, true)
+        })
+        .into_owned();
     clean = MARKDOWN_HEADING_RE.replace_all(&clean, "").into_owned();
     clean = MARKDOWN_QUOTE_RE.replace_all(&clean, "").into_owned();
     clean = MARKDOWN_BULLET_RE.replace_all(&clean, "").into_owned();
@@ -1102,11 +1822,7 @@ fn sanitize_speech_line(line: &str) -> String {
     clean = MARKDOWN_UNDERSCORE_STRONG_RE
         .replace_all(&clean, "$1")
         .into_owned();
-    clean = URL_RE.replace_all(&clean, " ").into_owned();
-    clean = WINDOWS_PATH_RE.replace_all(&clean, " ").into_owned();
-    clean = RELATIVE_PATH_RE.replace_all(&clean, " ").into_owned();
-    clean = FILENAME_RE.replace_all(&clean, " ").into_owned();
-    clean = HEX_HASH_RE.replace_all(&clean, " ").into_owned();
+    clean = normalize_speech_fragment(&clean, lang, false);
     clean = MARKDOWN_MARKER_RE.replace_all(&clean, "").into_owned();
 
     let trimmed = clean
@@ -1118,7 +1834,7 @@ fn sanitize_speech_line(line: &str) -> String {
     MULTISPACE_RE.replace_all(trimmed, " ").trim().to_string()
 }
 
-fn clean_speech_text(text: &str) -> String {
+fn clean_speech_text_for_language(text: &str, lang: SpeechLang) -> String {
     let mut parts = Vec::new();
     let mut in_code = false;
 
@@ -1132,7 +1848,7 @@ fn clean_speech_text(text: &str) -> String {
             continue;
         }
 
-        let line = sanitize_speech_line(line);
+        let line = sanitize_speech_line(line, lang);
         if !line.is_empty() {
             parts.push(line);
         }
@@ -1145,10 +1861,80 @@ fn clean_speech_text(text: &str) -> String {
     clean.chars().take(MAX_SPEECH_CHARS).collect()
 }
 
+fn clean_speech_text(text: &str) -> String {
+    clean_speech_text_for_language(text, speech_lang_from_code(detect_speech_language(text)))
+}
+
 fn estimate_speech_duration(text: &str, speed: f64) -> f64 {
     let words = clean_speech_text(text).split_whitespace().count() as f64;
     let words_per_minute = 165.0 * clamp(speed, 0.7, 1.5, 1.0);
     (words / words_per_minute * 60.0).max(1.0)
+}
+
+fn push_speech_chunk(chunks: &mut Vec<String>, text: &str) {
+    let source = text.trim();
+    if source.is_empty() {
+        return;
+    }
+    if source.chars().count() <= SPEECH_CHUNK_MAX_CHARS {
+        chunks.push(source.to_string());
+        return;
+    }
+
+    let mut current = String::new();
+    for word in source.split_whitespace() {
+        let next_len =
+            current.chars().count() + word.chars().count() + usize::from(!current.is_empty());
+        if next_len <= SPEECH_CHUNK_MAX_CHARS {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+            continue;
+        }
+        if !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+}
+
+fn split_speech_text(text: &str) -> Vec<String> {
+    let clean = clean_speech_text(text);
+    if clean.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for sentence in clean
+        .split_inclusive(|character| matches!(character, '.' | '!' | '?' | ';' | ':'))
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+    {
+        let next_len =
+            current.chars().count() + sentence.chars().count() + usize::from(!current.is_empty());
+        if next_len <= SPEECH_CHUNK_TARGET_CHARS || current.chars().count() < 220 {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(sentence);
+            continue;
+        }
+        push_speech_chunk(&mut chunks, &current);
+        current = sentence.to_string();
+    }
+
+    if current.is_empty() {
+        push_speech_chunk(&mut chunks, &clean);
+    } else {
+        push_speech_chunk(&mut chunks, &current);
+    }
+    chunks
 }
 
 fn default_windows_voice(voices: &[VoiceInfo], language: &str) -> String {
@@ -1169,8 +1955,47 @@ fn default_windows_voice(voices: &[VoiceInfo], language: &str) -> String {
 fn detect_speech_language(text: &str) -> &'static str {
     let source = text.to_lowercase();
     let french_markers = [
-        "avec", "besoin", "cest", "c'est", "dans", "des", "donc", "elle", "est", "faire", "faut",
-        "ici", "mais", "mon", "nous", "pour", "que", "qui", "sur", "une", "vous",
+        "avec",
+        "besoin",
+        "ca",
+        "ce",
+        "ces",
+        "cest",
+        "c'est",
+        "chemin",
+        "commande",
+        "corrige",
+        "dans",
+        "de",
+        "depuis",
+        "des",
+        "dossier",
+        "donc",
+        "du",
+        "elle",
+        "environnement",
+        "est",
+        "et",
+        "faire",
+        "faut",
+        "fichier",
+        "fonction",
+        "ici",
+        "il",
+        "la",
+        "le",
+        "les",
+        "mais",
+        "modifie",
+        "mon",
+        "nous",
+        "pour",
+        "que",
+        "qui",
+        "sur",
+        "un",
+        "une",
+        "vous",
     ];
     let english_markers = [
         "about", "also", "and", "are", "because", "can", "does", "for", "from", "have", "how",
@@ -1316,7 +2141,7 @@ async fn synthesize_windows_text(
     settings: &Settings,
     voices: &[VoiceInfo],
 ) -> Result<Value, String> {
-    let clean = clean_speech_text(text);
+    let clean = text.trim().to_string();
     if clean.is_empty() {
         return Ok(Value::Null);
     }
@@ -1397,7 +2222,7 @@ fn signed_hertz(value: i32) -> String {
 }
 
 async fn synthesize_edge_text(text: &str, settings: &Settings) -> Result<Value, String> {
-    let clean = clean_speech_text(text);
+    let clean = text.trim().to_string();
     if clean.is_empty() {
         return Ok(Value::Null);
     }
@@ -1542,6 +2367,11 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
         }
 
         let is_edge = settings.engine == "edge";
+        let chunks = split_speech_text(&item.text);
+        if chunks.is_empty() {
+            continue;
+        }
+
         status(
             &app,
             "working",
@@ -1551,99 +2381,116 @@ async fn process_queue(app: AppHandle, shared: SharedState) {
                 "Rendering visible output with Windows local TTS."
             },
         );
-        let synthesized = if is_edge {
-            synthesize_edge_text(&item.text, &settings).await
-        } else {
-            synthesize_windows_text(&item.text, &settings, &voices).await
-        };
-        match synthesized {
-            Ok(mut clip) if !clip.is_null() => {
-                let cancelled =
-                    shared.lock().expect("reader state poisoned").cancel_version != token;
-                if cancelled {
-                    continue;
-                }
-                let playback_id = Uuid::new_v4().to_string();
-                if let Some(object) = clip.as_object_mut() {
-                    object.insert("playbackId".into(), json!(playback_id));
-                }
-                let playback_id = clip
-                    .get("playbackId")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                {
+
+        for (index, chunk) in chunks.iter().enumerate() {
+            let cancelled = shared.lock().expect("reader state poisoned").cancel_version != token;
+            if cancelled {
+                break;
+            }
+
+            let synthesized = if is_edge {
+                synthesize_edge_text(chunk, &settings).await
+            } else {
+                synthesize_windows_text(chunk, &settings, &voices).await
+            };
+            match synthesized {
+                Ok(mut clip) if !clip.is_null() => {
+                    let cancelled =
+                        shared.lock().expect("reader state poisoned").cancel_version != token;
+                    if cancelled {
+                        break;
+                    }
+                    let playback_id = Uuid::new_v4().to_string();
+                    if let Some(object) = clip.as_object_mut() {
+                        object.insert("playbackId".into(), json!(playback_id));
+                        object.insert("chunkIndex".into(), json!(index + 1));
+                        object.insert("chunkCount".into(), json!(chunks.len()));
+                    }
+                    let playback_id = clip
+                        .get("playbackId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    {
+                        let mut state = shared.lock().expect("reader state poisoned");
+                        state.current_playback_id = Some(playback_id.clone());
+                        state.finished_playback_id = None;
+                    }
+                    emit_payload(&app, "reader:audio", clip.clone());
+                    append_bridge_broadcast(&json!({
+                        "type": "audio",
+                        "source": item.source,
+                        "createdAt": now(),
+                        "text": item.text,
+                        "metadata": item.metadata,
+                        "clip": clip
+                    }));
+                    status(
+                        &app,
+                        "speaking",
+                        if chunks.len() > 1 {
+                            if is_edge {
+                                "Reading visible Codex output in chunks with Edge Neural TTS."
+                            } else {
+                                "Reading visible Codex output in chunks with Windows local TTS."
+                            }
+                        } else if is_edge {
+                            "Reading visible Codex output with Edge Neural TTS."
+                        } else {
+                            match clip.get("language").and_then(Value::as_str).unwrap_or("") {
+                                "fr" => "Reading visible Codex output with Windows French TTS.",
+                                "en" => "Reading visible Codex output with Windows English TTS.",
+                                _ => "Reading visible Codex output with Windows local TTS.",
+                            }
+                        },
+                    );
+                    let duration_ms = clip
+                        .get("durationSeconds")
+                        .and_then(Value::as_f64)
+                        .map(|seconds| (seconds * 1000.0).max(600.0) as u64)
+                        .unwrap_or(1000);
+                    let _ = wait_for_speech(&shared, &playback_id, duration_ms, token).await;
                     let mut state = shared.lock().expect("reader state poisoned");
-                    state.current_playback_id = Some(playback_id.clone());
-                    state.finished_playback_id = None;
+                    if state.current_playback_id.as_deref() == Some(&playback_id) {
+                        state.current_playback_id = None;
+                    }
+                    if state.finished_playback_id.as_deref() == Some(&playback_id) {
+                        state.finished_playback_id = None;
+                    }
                 }
-                emit_payload(&app, "reader:audio", clip.clone());
-                append_bridge_broadcast(&json!({
-                    "type": "audio",
-                    "source": item.source,
-                    "createdAt": now(),
-                    "text": item.text,
-                    "metadata": item.metadata,
-                    "clip": clip
-                }));
-                status(
-                    &app,
-                    "speaking",
-                    if is_edge {
-                        "Reading visible Codex output with Edge Neural TTS."
-                    } else {
-                        match clip.get("language").and_then(Value::as_str).unwrap_or("") {
-                            "fr" => "Reading visible Codex output with Windows French TTS.",
-                            "en" => "Reading visible Codex output with Windows English TTS.",
-                            _ => "Reading visible Codex output with Windows local TTS.",
-                        }
-                    },
-                );
-                let duration_ms = clip
-                    .get("durationSeconds")
-                    .and_then(Value::as_f64)
-                    .map(|seconds| (seconds * 1000.0).max(600.0) as u64)
-                    .unwrap_or(1000);
-                let _ = wait_for_speech(&shared, &playback_id, duration_ms, token).await;
-                let mut state = shared.lock().expect("reader state poisoned");
-                if state.current_playback_id.as_deref() == Some(&playback_id) {
-                    state.current_playback_id = None;
+                Ok(_) => {
+                    append_bridge_broadcast(&json!({
+                        "type": "audio_skipped",
+                        "source": item.source,
+                        "createdAt": now(),
+                        "text": chunk,
+                        "metadata": item.metadata
+                    }));
                 }
-                if state.finished_playback_id.as_deref() == Some(&playback_id) {
-                    state.finished_playback_id = None;
+                Err(error) => {
+                    append_bridge_broadcast(&json!({
+                        "type": "audio_error",
+                        "source": item.source,
+                        "createdAt": now(),
+                        "text": chunk,
+                        "metadata": item.metadata,
+                        "error": error
+                    }));
+                    shared
+                        .lock()
+                        .expect("reader state poisoned")
+                        .speech_queue
+                        .clear();
+                    status(
+                        &app,
+                        "error",
+                        &format!(
+                            "{} speech failed: {error}",
+                            if is_edge { "Edge" } else { "Windows" }
+                        ),
+                    );
+                    break;
                 }
-            }
-            Ok(_) => {
-                append_bridge_broadcast(&json!({
-                    "type": "audio_skipped",
-                    "source": item.source,
-                    "createdAt": now(),
-                    "text": item.text,
-                    "metadata": item.metadata
-                }));
-            }
-            Err(error) => {
-                append_bridge_broadcast(&json!({
-                    "type": "audio_error",
-                    "source": item.source,
-                    "createdAt": now(),
-                    "text": item.text,
-                    "metadata": item.metadata,
-                    "error": error
-                }));
-                shared
-                    .lock()
-                    .expect("reader state poisoned")
-                    .speech_queue
-                    .clear();
-                status(
-                    &app,
-                    "error",
-                    &format!(
-                        "{} speech failed: {error}",
-                        if is_edge { "Edge" } else { "Windows" }
-                    ),
-                );
             }
         }
     }
@@ -1870,7 +2717,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn speech_cleaner_removes_paths_code_and_directives() {
+    fn speech_cleaner_normalizes_paths_code_and_directives() {
         let text = r#"Done in `renderer/renderer.js`.
 C:\Users\name\Documents\TTS\codex-output-reader\src-tauri\src\main.rs:12
 ```rust
@@ -1883,10 +2730,45 @@ Here is the user-facing summary."#;
 
         assert!(clean.contains("Done in"));
         assert!(clean.contains("Here is the user-facing summary."));
-        assert!(!clean.contains("renderer"));
-        assert!(!clean.contains("Users"));
+        assert!(clean.contains("renderer dot JavaScript"));
+        assert!(!clean.contains("C drive"));
+        assert!(clean.contains("main dot Rust line 12"));
         assert!(!clean.contains("const value"));
         assert!(!clean.contains("git-push"));
+    }
+
+    #[test]
+    fn speech_normalizer_reads_technical_tokens_in_french() {
+        let text = "Le fichier `src/components/App.tsx` lit JSON depuis `.env` et /api/users/:id.";
+
+        let clean = clean_speech_text_for_language(text, SpeechLang::Fr);
+
+        assert!(clean.contains("App point T S X"));
+        assert!(clean.contains("jison"));
+        assert!(clean.contains("fichier d'environnement"));
+        assert!(clean.contains("parametre id"));
+    }
+
+    #[test]
+    fn speech_normalizer_auto_detects_short_french_text() {
+        let text = "Le fichier `.env` configure JSON.";
+
+        let clean = clean_speech_text(text);
+
+        assert!(clean.contains("fichier d'environnement"));
+        assert!(clean.contains("jison"));
+    }
+
+    #[test]
+    fn speech_normalizer_reads_technical_tokens_in_english() {
+        let text = "The file `config.json` reads API keys from `.env.local` on localhost:3000.";
+
+        let clean = clean_speech_text_for_language(text, SpeechLang::En);
+
+        assert!(clean.contains("config dot jason"));
+        assert!(clean.contains("A P I keys"));
+        assert!(clean.contains("local environment file"));
+        assert!(clean.contains("localhost port 3000"));
     }
 
     #[test]
@@ -1918,6 +2800,32 @@ Here is the user-facing summary."#;
         assert!(!clean.contains('*'));
         assert!(!clean.contains('#'));
         assert!(!clean.contains('>'));
+    }
+
+    #[test]
+    fn speech_splitter_chunks_long_messages() {
+        let text = r#"Oui, c’est possible. Et même assez propre.
+
+La condition importante: Q-Link ne peut pas attraper directement une image affichée dans Codex Desktop. Il faut une convention locale: Codex doit enregistrer l’image dans un dossier connu, puis Q-Link surveille ce dossier et l’envoie à Telegram.
+
+La meilleure architecture serait:
+
+Tu envoies une demande image depuis Telegram, idéalement avec une commande comme image ou génère une image.
+Q-Link crée un identifiant de requête et ajoute au prompt une consigne automatique du genre: Si tu génères une image, enregistre-la dans le dossier image outbox de Q-Link avec ce nom précis.
+Codex génère ou prépare l’image et la sauvegarde dans ce dossier.
+Q-Link surveille le dossier.
+Dès qu’un nouveau fichier image est stable, par exemple PNG, JPEG ou WebP, Q-Link l’envoie au même chat Telegram avec sendPhoto.
+Q-Link marque le fichier comme envoyé pour éviter les doublons.
+
+Donc oui: faisable. Mais il faut ajouter un petit système côté Q-Link plus une instruction automatique envoyée à Codex pour qu’il range bien l’image au bon endroit."#;
+
+        let chunks = split_speech_text(text);
+
+        assert!(chunks.len() >= 2);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.chars().count() <= SPEECH_CHUNK_MAX_CHARS));
+        assert!(chunks[0].starts_with("Oui"));
     }
 }
 

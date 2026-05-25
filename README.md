@@ -114,7 +114,7 @@ Build output is ignored by Git.
 
 - Previous Codex output is not read when QDex attaches to a session.
 - Markdown code blocks are reduced before speech to avoid reading long blocks of punctuation.
-- Speech cleanup omits code-like lines, inline code, local paths, URLs, and internal Codex directives.
+- Speech cleanup normalizes inline code, local paths, URLs, extensions, common acronyms, and code symbols into TTS-friendly French or English text. Internal Codex directives are omitted.
 - Edge Neural TTS uses Microsoft Edge Read Aloud endpoints and does not require an API key.
 - The status line is limited to observable saved events and does not expose hidden model reasoning.
 - Planned follow-up work is tracked in [TODO.md](TODO.md).
