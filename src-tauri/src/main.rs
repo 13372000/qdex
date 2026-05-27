@@ -5,12 +5,14 @@ use edge_tts_rust::{Boundary, EdgeTtsClient, SpeakOptions};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt as _;
 use std::{
     collections::VecDeque,
     env, fs,
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::Stdio,
+    process::{Child, ChildStdin, ChildStdout, Command as StdCommand, Stdio},
     sync::{Arc, LazyLock, Mutex},
     time::{Duration, SystemTime},
 };
@@ -20,7 +22,7 @@ use tauri::{
     App, AppHandle, Emitter, LogicalSize, Manager, WebviewWindow,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::{process::Command, time::sleep};
+use tokio::{process::Command as TokioCommand, time::sleep};
 use uuid::Uuid;
 
 const ACTIVE_SESSION_SCAN_MS: u64 = 5000;
@@ -126,6 +128,9 @@ struct ReaderState {
 }
 
 type SharedState = Arc<Mutex<ReaderState>>;
+
+static WINDOWS_TTS_WORKER: LazyLock<Mutex<Option<WindowsTtsWorker>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1400,6 +1405,39 @@ fn spoken_extension(extension: &str, lang: SpeechLang) -> Option<String> {
     Some(spoken.to_string())
 }
 
+fn spoken_known_filename(core: &str, line: Option<&str>, lang: SpeechLang) -> Option<String> {
+    let spoken = match core.to_ascii_lowercase().as_str() {
+        "readme" => "read me",
+        "agent" | "agents" => lang_pair(lang, "agent", "agent"),
+        "license" | "licence" => lang_pair(lang, "licence", "license"),
+        "changelog" => "change log",
+        "todo" => lang_pair(lang, "a faire", "to do"),
+        _ => return None,
+    };
+    Some(format!("{spoken}{}", spoken_line_suffix(line, lang)))
+}
+
+fn known_filename_with_extension(
+    stem: &str,
+    extension: &str,
+    line: Option<&str>,
+    lang: SpeechLang,
+) -> Option<String> {
+    let known = spoken_known_filename(stem, None, lang)?;
+    let extension = spoken_extension(extension, lang).unwrap_or_default();
+    Some(
+        format!(
+            "{}{}{}{}",
+            known,
+            if extension.is_empty() { "" } else { " " },
+            extension,
+            spoken_line_suffix(line, lang)
+        )
+        .trim()
+        .to_string(),
+    )
+}
+
 fn normalize_identifier_segment(value: &str, lang: SpeechLang) -> String {
     let trimmed = value
         .trim()
@@ -1459,6 +1497,9 @@ fn normalize_filename_token(token: &str, lang: SpeechLang) -> String {
     let (core, line) = split_line_suffix(token);
     if let Some((stem, extension)) = core.rsplit_once('.') {
         let stem = stem.trim_start_matches('.');
+        if let Some(known) = known_filename_with_extension(stem, extension, line, lang) {
+            return known;
+        }
         let mut parts = Vec::new();
         if !stem.is_empty() {
             parts.push(normalize_identifier_segment(stem, lang));
@@ -1471,6 +1512,10 @@ fn normalize_filename_token(token: &str, lang: SpeechLang) -> String {
             MULTISPACE_RE.replace_all(&parts.join(" "), " ").trim(),
             spoken_line_suffix(line, lang)
         );
+    }
+
+    if let Some(known) = spoken_known_filename(core, line, lang) {
+        return known;
     }
 
     format!(
@@ -2029,6 +2074,119 @@ fn windows_voice_for_text(
     (language, voice)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowsTtsRequest {
+    id: String,
+    text_path: String,
+    output_path: String,
+    rate: i32,
+    volume: i32,
+    voice: String,
+}
+
+struct WindowsTtsWorker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl WindowsTtsWorker {
+    fn start(root: &Path) -> Result<Self, String> {
+        let script_path = windows_tts_worker_script_path(root)?;
+        let mut command = StdCommand::new("powershell.exe");
+        command.args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script_path.to_string_lossy().as_ref(),
+        ]);
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        command.creation_flags(0x08000000);
+
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "Windows speech helper did not expose stdin".to_string())?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Windows speech helper did not expose stdout".to_string())?;
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    fn synthesize(&mut self, request: &WindowsTtsRequest) -> Result<(), String> {
+        if let Some(status) = self.child.try_wait().map_err(|error| error.to_string())? {
+            return Err(format!("Windows speech helper exited with {status}"));
+        }
+
+        let payload = serde_json::to_string(request).map_err(|error| error.to_string())?;
+        writeln!(self.stdin, "{payload}").map_err(|error| error.to_string())?;
+        self.stdin.flush().map_err(|error| error.to_string())?;
+
+        let mut response_line = String::new();
+        let bytes = self
+            .stdout
+            .read_line(&mut response_line)
+            .map_err(|error| error.to_string())?;
+        if bytes == 0 {
+            return Err("Windows speech helper closed before returning audio".into());
+        }
+
+        let response: Value = serde_json::from_str(response_line.trim()).map_err(|error| {
+            format!(
+                "Windows speech helper returned invalid JSON: {error}; raw={}",
+                response_line.trim()
+            )
+        })?;
+        let response_id = response.get("id").and_then(Value::as_str).unwrap_or("");
+        if response_id != request.id {
+            return Err(format!(
+                "Windows speech helper response mismatch: expected {}, got {}",
+                request.id, response_id
+            ));
+        }
+        if response.get("ok").and_then(Value::as_bool).unwrap_or(false) {
+            Ok(())
+        } else {
+            Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Windows speech helper failed")
+                .to_string())
+        }
+    }
+}
+
+impl Drop for WindowsTtsWorker {
+    fn drop(&mut self) {
+        let _ = self.stdin.write_all(b"{\"cmd\":\"quit\"}\n");
+        let _ = self.stdin.flush();
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+fn write_script_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    if matches!(fs::read_to_string(path), Ok(existing) if existing == content) {
+        return Ok(());
+    }
+    fs::write(path, content).map_err(|error| error.to_string())
+}
+
 async fn refresh_windows_voices() -> Vec<VoiceInfo> {
     let script = r#"
 Add-Type -AssemblyName System.Speech
@@ -2047,7 +2205,7 @@ try {
   $synth.Dispose()
 }
 "#;
-    let mut command = Command::new("powershell.exe");
+    let mut command = TokioCommand::new("powershell.exe");
     command.args([
         "-NoProfile",
         "-ExecutionPolicy",
@@ -2136,60 +2294,186 @@ try {
     Ok(script_path)
 }
 
-async fn synthesize_windows_text(
-    text: &str,
-    settings: &Settings,
-    voices: &[VoiceInfo],
-) -> Result<Value, String> {
-    let clean = text.trim().to_string();
-    if clean.is_empty() {
-        return Ok(Value::Null);
+fn windows_tts_worker_script_path(root: &Path) -> Result<PathBuf, String> {
+    let script_path = root.join("windows-sapi-tts-worker.ps1");
+    let content = r#"
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$installedVoices = @{}
+$synth.GetInstalledVoices() | ForEach-Object {
+  $installedVoices[$_.VoiceInfo.Name] = $true
+}
+
+function Send-Json([hashtable]$Payload) {
+  [Console]::Out.WriteLine(($Payload | ConvertTo-Json -Compress -Depth 8))
+  [Console]::Out.Flush()
+}
+
+try {
+  while ($null -ne ($line = [Console]::In.ReadLine())) {
+    if ([string]::IsNullOrWhiteSpace($line)) {
+      continue
     }
+
+    $job = $null
+    try {
+      $job = $line | ConvertFrom-Json
+      if ($job.cmd -eq "quit") {
+        break
+      }
+
+      $textPath = [string]$job.textPath
+      $outputPath = [string]$job.outputPath
+      $text = [System.IO.File]::ReadAllText($textPath, [System.Text.Encoding]::UTF8)
+      $synth.Rate = [Math]::Max(-10, [Math]::Min(10, [int]$job.rate))
+      $synth.Volume = [Math]::Max(0, [Math]::Min(100, [int]$job.volume))
+
+      $voice = [string]$job.voice
+      if (-not [string]::IsNullOrWhiteSpace($voice) -and $installedVoices.ContainsKey($voice)) {
+        $synth.SelectVoice($voice)
+      }
+
+      $synth.SetOutputToWaveFile($outputPath)
+      try {
+        $synth.Speak($text)
+      } finally {
+        $synth.SetOutputToNull()
+      }
+
+      Send-Json @{ ok = $true; id = [string]$job.id; outputPath = $outputPath }
+    } catch {
+      try { $synth.SetOutputToNull() } catch {}
+      $jobId = ""
+      if ($null -ne $job -and $null -ne $job.id) {
+        $jobId = [string]$job.id
+      }
+      Send-Json @{ ok = $false; id = $jobId; error = $_.Exception.Message }
+    }
+  }
+} finally {
+  $synth.Dispose()
+}
+"#;
+    write_script_if_changed(&script_path, content)?;
+    Ok(script_path)
+}
+
+fn run_windows_tts_worker(root: &Path, request: &WindowsTtsRequest) -> Result<(), String> {
+    let mut guard = WINDOWS_TTS_WORKER
+        .lock()
+        .map_err(|_| "Windows speech helper lock was poisoned".to_string())?;
+    if guard.is_none() {
+        *guard = Some(WindowsTtsWorker::start(root)?);
+    }
+
+    let first_result = guard
+        .as_mut()
+        .expect("Windows speech helper should be initialized")
+        .synthesize(request);
+    if first_result.is_ok() {
+        return first_result;
+    }
+
+    let first_error = first_result.expect_err("error checked above");
+    *guard = None;
+    *guard = Some(WindowsTtsWorker::start(root).map_err(|restart_error| {
+        format!("Windows speech helper failed: {first_error}; restart failed: {restart_error}")
+    })?);
+    guard
+        .as_mut()
+        .expect("Windows speech helper should be initialized after restart")
+        .synthesize(request)
+        .map_err(|retry_error| {
+            format!("Windows speech helper failed: {first_error}; retry failed: {retry_error}")
+        })
+}
+
+fn run_windows_tts_once_blocking(
+    root: &Path,
+    text_path: &Path,
+    wav_path: &Path,
+    sapi_rate: i32,
+    volume: i32,
+    voice: &str,
+) -> Result<(), String> {
+    let script_path = windows_tts_script_path(root)?;
+    let mut command = StdCommand::new("powershell.exe");
+    command
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(script_path)
+        .arg("-TextPath")
+        .arg(text_path)
+        .arg("-OutputPath")
+        .arg(wav_path)
+        .arg("-Rate")
+        .arg(sapi_rate.to_string())
+        .arg("-Volume")
+        .arg(volume.to_string())
+        .arg("-Voice")
+        .arg(voice)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000);
+
+    let output = command.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        Err(format!(
+            "Windows speech synthesis failed: {}",
+            detail.trim()
+        ))
+    }
+}
+
+fn synthesize_windows_text_blocking(
+    clean: String,
+    settings: Settings,
+    voices: Vec<VoiceInfo>,
+) -> Result<Value, String> {
     let clips = env::temp_dir().join("qdex-tauri");
     fs::create_dir_all(&clips).map_err(|error| error.to_string())?;
     let id = Uuid::new_v4().to_string();
     let text_path = clips.join(format!("{id}.txt"));
     let wav_path = clips.join(format!("{id}.wav"));
-    let script_path = windows_tts_script_path(&clips)?;
     let speed = clamp(settings.speed, 0.7, 1.5, 1.0);
     let sapi_rate = ((speed - 1.0) * 20.0).round() as i32;
     let volume = (clamp(settings.volume, 0.0, 1.0, 0.85) * 100.0).round() as i32;
-    let (language, voice) = windows_voice_for_text(settings, voices, &clean);
+    let (language, voice) = windows_voice_for_text(&settings, &voices, &clean);
 
     fs::write(&text_path, clean.as_bytes()).map_err(|error| error.to_string())?;
-    let mut command = Command::new("powershell.exe");
-    let rate_arg = sapi_rate.to_string();
-    let volume_arg = volume.to_string();
-    command.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        script_path.to_string_lossy().as_ref(),
-        "-TextPath",
-        text_path.to_string_lossy().as_ref(),
-        "-OutputPath",
-        wav_path.to_string_lossy().as_ref(),
-        "-Rate",
-        &rate_arg,
-        "-Volume",
-        &volume_arg,
-        "-Voice",
-        &voice,
-    ]);
-    command.stdout(Stdio::null()).stderr(Stdio::piped());
-    #[cfg(target_os = "windows")]
-    command.creation_flags(0x08000000);
+    let request = WindowsTtsRequest {
+        id: id.clone(),
+        text_path: text_path.to_string_lossy().to_string(),
+        output_path: wav_path.to_string_lossy().to_string(),
+        rate: sapi_rate,
+        volume,
+        voice: voice.clone(),
+    };
 
-    let output = command.output().await.map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+    let synthesis_result = run_windows_tts_worker(&clips, &request).or_else(|helper_error| {
+        let _ = fs::remove_file(&wav_path);
+        run_windows_tts_once_blocking(&clips, &text_path, &wav_path, sapi_rate, volume, &voice)
+            .map_err(|fallback_error| {
+                format!(
+                    "Windows fast speech helper failed: {helper_error}; fallback failed: {fallback_error}"
+                )
+            })
+    });
+    if let Err(error) = synthesis_result {
         let _ = fs::remove_file(&text_path);
         let _ = fs::remove_file(&wav_path);
-        return Err(format!(
-            "Windows speech synthesis failed: {}",
-            detail.trim()
-        ));
+        return Err(error);
     }
 
     let bytes = fs::read(&wav_path).map_err(|error| error.to_string())?;
@@ -2200,9 +2484,26 @@ async fn synthesize_windows_text(
         "durationSeconds": estimate_speech_duration(&clean, speed),
         "language": language,
         "speechSpeed": speed,
+        "synthesisMode": "windows-persistent",
         "voiceId": voice,
         "volume": settings.volume
     }))
+}
+
+async fn synthesize_windows_text(
+    text: &str,
+    settings: &Settings,
+    voices: &[VoiceInfo],
+) -> Result<Value, String> {
+    let clean = text.trim().to_string();
+    if clean.is_empty() {
+        return Ok(Value::Null);
+    }
+    let settings = settings.clone();
+    let voices = voices.to_vec();
+    tokio::task::spawn_blocking(move || synthesize_windows_text_blocking(clean, settings, voices))
+        .await
+        .map_err(|error| format!("Windows speech synthesis task failed: {error}"))?
 }
 
 fn signed_percent(value: i32) -> String {
@@ -2769,6 +3070,17 @@ Here is the user-facing summary."#;
         assert!(clean.contains("A P I keys"));
         assert!(clean.contains("local environment file"));
         assert!(clean.contains("localhost port 3000"));
+    }
+
+    #[test]
+    fn speech_normalizer_reads_known_markdown_files_naturally() {
+        let clean =
+            clean_speech_text_for_language("Update `README.md` and `AGENTS.md:3`.", SpeechLang::En);
+
+        assert!(clean.contains("read me dot Markdown"));
+        assert!(clean.contains("agent dot Markdown line 3"));
+        assert!(!clean.contains("R E A D M E"));
+        assert!(!clean.contains("A G E N T S"));
     }
 
     #[test]
